@@ -285,6 +285,15 @@ static bool AtomicReplaceHostFile(const char* who, const std::filesystem::path& 
             static_cast<unsigned long>(GetLastError()));
     return false;
 #else
+#if defined(__SWITCH__)
+    // Horizon's filesystem refuses to rename onto an existing file, so the replace is two steps
+    // there: a crash between them loses the old copy but never leaves a partial file (DriftDroid,
+    // dorPXP/driftdroid, GPL-3.0, runtime/src/hle/storage/nand_async.cpp).
+    {
+        std::error_code removeEc;
+        std::filesystem::remove(targetPath, removeEc);
+    }
+#endif
     if (!NandRename(tempPath, targetPath)) {
         LogNandError(who, "ERROR: rename('%s' -> '%s') failed",
                 HostPathText(tempPath).c_str(), HostPathText(targetPath).c_str());
