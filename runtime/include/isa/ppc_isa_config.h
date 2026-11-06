@@ -35,4 +35,15 @@ inline constexpr bool MkwStateFreeAbiEnabled(uint32_t) noexcept
 #define MKW_PPC_COLD __attribute__((cold))
 
 
+#if defined(__clang__)
 using MkwStateFreeResult2 = uint64_t __attribute__((ext_vector_type(2)));
+#else
+// GCC (devkitA64, the Switch build) has no ext_vector_type, and its vector_size types reject the
+// copy-list-initialization the translator emits (`return { a, b };`). A two-lane aggregate accepts
+// it, reads back through the same subscripts, and is returned in x0/x1 under AAPCS64.
+struct MkwStateFreeResult2 {
+    uint64_t lanes[2];
+    constexpr uint64_t operator[](int index) const noexcept { return lanes[index]; }
+    uint64_t& operator[](int index) noexcept { return lanes[index]; }
+};
+#endif

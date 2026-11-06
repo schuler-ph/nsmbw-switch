@@ -16,7 +16,9 @@
 // only sigsetjmp/siglongjmp save and restore the process signal mask, which is what keeps SIGSEGV
 // from staying blocked (and a second fault during the same ctor loop from escalating instead of
 // trapping) after the first recovered fault.
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__SWITCH__)
+// Switch: Horizon has no POSIX signals, so nothing ever longjmps here from a signal handler and
+// the signal mask sigsetjmp saves does not exist; plain jmp_buf (newlib has no sigjmp_buf).
 using MkwJmpBuf = jmp_buf;
 #define MKW_SETJMP(buf) setjmp(buf)
 #else

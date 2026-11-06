@@ -11,7 +11,13 @@
 
 inline uint32_t PpcRotl32Inline(uint32_t value, uint32_t shift)
 {
+#if defined(__clang__)
     return __builtin_rotateleft32(value, shift);
+#else
+    // GCC (the Switch build) has no __builtin_rotateleft32; it turns this idiom into one ROR.
+    shift &= 31u;
+    return (value << shift) | (value >> ((32u - shift) & 31u));
+#endif
 }
 
 extern "C" uint32_t OSSystemCall();

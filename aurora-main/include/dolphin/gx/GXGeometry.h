@@ -21,10 +21,16 @@ void GXSetLineWidth(u8 width, GXTexOffset texOffsets);
 void GXSetPointSize(u8 pointSize, GXTexOffset texOffsets);
 void GXEnableTexOffsets(GXTexCoordID coord, GXBool line_enable, GXBool point_enable);
 #ifdef TARGET_PC
+#if defined(__cplusplus) && defined(__GNUC__) && !defined(__clang__)
+// GCC (the Switch build) rejects two overloads of one extern "C" function; a default argument is
+// the same call surface for C++ callers (from DriftDroid, dorPXP/driftdroid).
+void GXSetArray(GXAttr attr, const void* data, u32 size, u8 stride, bool le = false);
+#else
 void GXSetArray(GXAttr attr, const void* data, u32 size, u8 stride, bool le);
 static inline void GXSetArray(GXAttr attr, const void* data, u32 size, u8 stride) {
   GXSetArray(attr, data, size, stride, false);
 }
+#endif
 #define GXSETARRAY(attr, data, size, stride, le) GXSetArray((attr), (data), (size), (stride), (le))
 #else
 void GXSetArray(GXAttr attr, const void* data, u8 stride);

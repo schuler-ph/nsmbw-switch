@@ -69,11 +69,15 @@ std::optional<TranslatedFunctionInfo> FindNearestTranslatedFunction(uint32_t add
 
 // generated/guest_symbol_table.cpp (or the stub when it is absent): the
 // project's function-map names, sorted by address, for crash symbolization.
+} // namespace
+// Global scope: GCC gives an extern "C" variable declared inside an unnamed namespace that
+// namespace's internal linkage (found by DriftDroid with GCC 15).
 extern "C" {
 extern const uint32_t kGuestMapSymbolCount;
 extern const uint32_t kGuestMapSymbolAddresses[];
 extern const char* const kGuestMapSymbolNames[];
 }
+namespace {
 
 // Floor lookup into the function-map name table with the same gap cap as the
 // registry heuristic above. Returns nullptr when no named symbol is close.
