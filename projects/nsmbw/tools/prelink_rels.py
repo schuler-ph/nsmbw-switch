@@ -170,6 +170,13 @@ def patch_wr32(addr, value):
 
 stub_base = align_up(end, 0x20)
 p1_stubs = p1_character.apply(patch_rd32, patch_wr32, stub_base)
+# The Redump-verified SMNE01 rev 1 main.dol (166eb6b7...) calls DVDDiskCheck (the disc's BCA, read
+# over the drive interface) from main; there is no drive here, so the check fails the disc and the
+# game stops with "An error has occurred". Put a nop there, as newer_prelink.py does for Newer.
+DVD_DISK_CHECK_CALL, DVD_DISK_CHECK = 0x800C9FC8, 0x80006780
+if patch_rd32(DVD_DISK_CHECK_CALL) == 0x48000001 | ((DVD_DISK_CHECK - DVD_DISK_CHECK_CALL) & 0x03FFFFFC):
+    patch_wr32(DVD_DISK_CHECK_CALL, 0x60000000)
+    print(f"main.dol: removed the DVDDiskCheck call at 0x{DVD_DISK_CHECK_CALL:08X}")
 (GAME / "main_patched.dol").write_bytes(dol)
 mem += bytes(stub_base - end) + p1_stubs
 
