@@ -949,9 +949,19 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
     if (!gfx_flag("validate")) {
       enableToggles.push_back("skip_validation");
     }
+#if defined(__SWITCH__)
+    // Keep Tint's robustness transform (clamped buffer indices and texture coordinates) on the
+    // Switch: without it a shader read runs past its resource and the Tegra GPU raises a page
+    // fault at the first CPU-visible EFB copy on the title screen (hardware runs 5-9, 2026-11-06;
+    // confirmed by run 10 with the robust flag). Which shader reads out of bounds is still open.
+    if (gfx_flag("norobust")) {
+      enableToggles.push_back("disable_robustness");
+    }
+#else
     if (!gfx_flag("robust")) {
       enableToggles.push_back("disable_robustness");
     }
+#endif
 #endif
     if (g_backendType == wgpu::BackendType::Vulkan && !gfx_flag("nomono")) {
       enableToggles.push_back("vulkan_monolithic_pipeline_cache");
