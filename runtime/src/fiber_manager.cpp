@@ -262,7 +262,14 @@ bool GuestFiberManager::CreateGuestFiber(uint32_t guestThreadAddr, uint32_t entr
     // it can exhaust the guarded coroutine stack as unrelated host work (such
     // as a window resize) adds a little more nesting. Keep enough headroom for
     // those chains while the guest stack remains separately bounded.
+#if defined(__SWITCH__)
+    // Switch fiber stacks are plain heap blocks with no guard page, and guest calls can reach Dawn
+    // and switch-mesa's shader compiler synchronously (deeply recursive); DriftDroid saw 64 KiB
+    // overflow into the neighbouring heap chunk. Size generously.
+    constexpr size_t kHostStackSize = 2 * 1024 * 1024;
+#else
     constexpr size_t kHostStackSize = 1024 * 1024;
+#endif
     gf.fiber = HostContext::Create(kHostStackSize, FiberProc,
                                    reinterpret_cast<void*>(static_cast<uintptr_t>(guestThreadAddr)));
     

@@ -1,3 +1,5 @@
+// This file owns the one write to the Switch guest base (see the declaration in the header).
+#define MKW_GUEST_FLAT_BASE_WRITER
 #include "guest_flat_memory.h"
 
 #include <algorithm>
@@ -27,6 +29,22 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#elif defined(__SWITCH__)
+// Nintendo Switch homebrew (devkitA64/libnx), ported from DriftDroid (dorPXP/driftdroid, GPL-3.0):
+// no mmap()/mprotect()/memfd_create(); Horizon's memory API is svc-based instead.
+//
+// Multi-view aliasing (verified on hardware by DriftDroid):
+//   1. memalign() ordinary heap pages, one guard page longer than what gets mapped
+//      (kSwitchHeapTailSlack),
+//   2. svcMapProcessCodeMemory(self, hostView, heap, size) turns them into code memory at
+//      hostView (the heap source becomes inaccessible, which is fine - nothing uses it),
+//   3. svcSetProcessMemoryPermission(self, hostView, size, RW) makes that view writable,
+//   4. svcMapProcessMemory(guestView, self, hostView + offset, size) adds further live views.
+// Writes through any view are visible through all of them. Neither view accepts permission
+// changes on sub-ranges, so ProtectRange() fails and the build uses the checked path by default
+// (RequiresCheckedAccess); there is no fault handler that could service a trap anyway.
+#include <malloc.h>
+#include <switch.h>
 #else
 #include <cerrno>
 #include <cstring>
@@ -67,7 +85,29 @@ int CreateSharedMemory(const char* name, size_t size, bool& sized) {
 #endif
 
 namespace GuestFlat {
-#if !defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE)
+#if defined(__SWITCH__)
+uintptr_t g_switchFlatGuestBase __asm__("mkw_switch_flat_guest_base")
+    __attribute__((visibility("hidden"))) = 0;
+
+// No page protection and no resumable faults on Horizon (see above): MMIO, deferred EFB reads,
+// the executable-write guard and wild pointers are only caught on the checked path. The flat fast
+// path (DriftDroid's choice for Mario Kart) is opt-in through a flag file until NSMBW is known to
+// run without any of those traps.
+extern const bool g_requiresCheckedAccess = [] {
+    if (FILE* flag = std::fopen("sdmc:/switch/nsmbw/flat_memory.flag", "r")) {
+        std::fclose(flag);
+        return false;
+    }
+    return true;
+}();
+
+namespace {
+// svcMapProcessCodeMemory makes its source pages inaccessible, but newlib's allocator keeps a
+// boundary tag for the following chunk in the last bytes of a block. One extra page that is never
+// mapped keeps every allocator header on accessible memory.
+constexpr size_t kSwitchHeapTailSlack = 0x1000;
+} // namespace
+#elif !defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE)
 // A host page larger than a Wii page can't carry per-Wii-page protection (see the header).
 extern const bool g_requiresCheckedAccess = [] {
     const long size = sysconf(_SC_PAGESIZE);
@@ -88,7 +128,7 @@ constexpr size_t kHostPageSize = 0x1000;
 
 // Only hosts that can expose a page larger than 4 KiB need to discover their
 // size at runtime; see RequiresCheckedAccess() in guest_flat_memory.h.
-#if !defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE)
+#if !defined(MKW_GUEST_FLAT_FIXED_PAGE_SIZE) && !defined(__SWITCH__)
 size_t HostPageSize()
 {
     const long size = sysconf(_SC_PAGESIZE);
@@ -105,6 +145,11 @@ using ProtectionFlags = DWORD;
 constexpr ProtectionFlags kProtNone = PAGE_NOACCESS;
 constexpr ProtectionFlags kProtRead = PAGE_READONLY;
 constexpr ProtectionFlags kProtReadWrite = PAGE_READWRITE;
+#elif defined(__SWITCH__)
+using ProtectionFlags = u32;
+constexpr ProtectionFlags kProtNone = Perm_None;
+constexpr ProtectionFlags kProtRead = Perm_R;
+constexpr ProtectionFlags kProtReadWrite = Perm_Rw;
 #else
 using ProtectionFlags = int;
 constexpr ProtectionFlags kProtNone = PROT_NONE;
@@ -125,6 +170,10 @@ bool g_initialized = false;
 std::vector<RegionRequest> g_activeRegions;
 #if defined(_WIN32)
 PVOID g_vectoredHandle = nullptr;
+#elif defined(__SWITCH__)
+// The flat guest space's outer VA reservation, kept for the process lifetime like the other
+// platforms' 4 GiB reservation.
+VirtmemReservation* g_switchReservation = nullptr;
 #endif
 
 std::mutex& StateMutex() {
@@ -150,6 +199,9 @@ struct SectionKeyHash {
 struct Section {
 #if defined(_WIN32)
     HANDLE handle = nullptr;
+#elif defined(__SWITCH__)
+    // Heap pages backing the section, locked by svcMapProcessCodeMemory once hostView exists.
+    uint8_t* heapSource = nullptr;
 #else
     int fd = -1;
 #endif
@@ -235,12 +287,28 @@ std::string LastErrorText(const char* what) {
     return oss.str();
 }
 
+#if defined(__SWITCH__)
+// svc failures report a Result code, not errno.
+std::string SwitchErrorText(const char* what, Result rc) {
+    std::ostringstream oss;
+    oss << what << " failed (rc=0x" << std::hex << rc << std::dec << ")";
+    return oss.str();
+}
+#endif
+
 // Protects [address, address+size) with `protection`, bridging VirtualProtect (Windows) and
 // mprotect (POSIX) so every fault-interception call site below can stay platform-neutral.
 bool ProtectRange(uint8_t* address, uint64_t size, ProtectionFlags protection) {
 #if defined(_WIN32)
     DWORD previous = 0;
     return VirtualProtect(address, static_cast<SIZE_T>(size), protection, &previous) != FALSE;
+#elif defined(__SWITCH__)
+    // Horizon refuses reprotection of code/aliased memory, and a protected page would have no
+    // fault handler to service it. Failing without a syscall avoids thousands of doomed svcs.
+    (void)address;
+    (void)size;
+    (void)protection;
+    return false;
 #else
     return mprotect(address, static_cast<size_t>(size), protection) == 0;
 #endif
@@ -295,6 +363,21 @@ void EnsureReservation() {
             "The flat guest reservation did not land on the fixed base the translated code was "
             "compiled against.");
     }
+#elif defined(__SWITCH__)
+    // No fixed base (see g_switchFlatGuestBase in the header): virtmemFindCodeMemory only returns
+    // windows outside the randomized heap/alias/stack regions and clear of existing mappings -
+    // exactly where svcMapProcessMemory views may go.
+    virtmemLock();
+    void* reserved = virtmemFindCodeMemory(kGuestSpaceSize + kAllocationGranularity, 0);
+    VirtmemReservation* reservation =
+        reserved != nullptr ? virtmemAddReservation(reserved, kGuestSpaceSize + kAllocationGranularity)
+                            : nullptr;
+    virtmemUnlock();
+    if (reservation == nullptr) {
+        throw std::runtime_error("Unable to find a free 4 GiB window for the flat guest address space.");
+    }
+    g_switchReservation = reservation;
+    g_switchFlatGuestBase = reinterpret_cast<uintptr_t>(reserved);
 #else
     void* requested = reinterpret_cast<void*>(kFixedFlatGuestBase);
 
@@ -358,6 +441,16 @@ void MapGuestView(const Section& section, uint64_t sectionOffset, uint32_t guest
             << ")";
         throw std::runtime_error(oss.str());
     }
+#elif defined(__SWITCH__)
+    // A further live alias of the section's host view (see the file-level comment).
+    const Result rc = svcMapProcessMemory(target, envGetOwnProcessHandle(),
+                                          reinterpret_cast<u64>(section.hostView) + sectionOffset, mappedSize);
+    if (R_FAILED(rc)) {
+        std::ostringstream oss;
+        oss << "Unable to map guest region 0x" << std::hex << guestBase << " (+0x" << mappedSize
+            << ") into the flat reservation (rc=0x" << rc << ")" << std::dec;
+        throw std::runtime_error(oss.str());
+    }
 #else
     // MAP_FIXED is safe (and needs no particular kernel version) here specifically because we're
     // deliberately overwriting a sub-range of the PROT_NONE reservation this module already owns
@@ -383,6 +476,23 @@ bool CommitPlaceholder(uint8_t* address, uint64_t size, ProtectionFlags protecti
                                    MEM_RESERVE | MEM_COMMIT | kMemReplacePlaceholder, protection,
                                    nullptr, 0);
     return result != nullptr;
+#elif defined(__SWITCH__)
+    if (protection == kProtNone) {
+        // The MMIO window: the outer reservation is genuinely unmapped until something maps into
+        // it, so there is nothing to commit; a touch faults either way.
+        return true;
+    }
+    // On-demand commit of a stray block (only reachable from HandleAccessViolation, which nothing
+    // calls on Switch). Private single-view memory: heap pages mapped straight at the target.
+    const Handle self = envGetOwnProcessHandle();
+    void* source = memalign(0x1000, static_cast<size_t>(size) + kSwitchHeapTailSlack);
+    if (source == nullptr) return false;
+    if (R_FAILED(svcMapProcessCodeMemory(self, reinterpret_cast<u64>(address), reinterpret_cast<u64>(source),
+                                         size))) {
+        std::free(source);
+        return false;
+    }
+    return R_SUCCEEDED(svcSetProcessMemoryPermission(self, reinterpret_cast<u64>(address), size, Perm_Rw));
 #else
     // No separate reserve-vs-commit step is needed: the anonymous PROT_NONE reservation this
     // range came from is already demand-zero backed, so mprotect() alone both "commits" and
@@ -597,6 +707,36 @@ void Initialize(const std::vector<RegionRequest>& regions) {
         if (section.hostView == nullptr) {
             throw std::runtime_error(LastErrorText("MapViewOfFile for the host guest-RAM alias"));
         }
+#elif defined(__SWITCH__)
+        // One backing store, several VA aliases, built from heap-backed code memory: the host view
+        // is the code-memory mapping itself and MapGuestView() adds the guest-view aliases. The
+        // heap pages stay locked for the process lifetime; the kernel returns them at exit.
+        const Handle self = envGetOwnProcessHandle();
+        section.heapSource =
+            static_cast<uint8_t*>(memalign(0x1000, static_cast<size_t>(rounded) + kSwitchHeapTailSlack));
+        if (section.heapSource == nullptr) {
+            throw std::runtime_error("Out of heap memory for guest RAM");
+        }
+        // memalign does not zero, and the source is inaccessible once mapped, so clear it now.
+        std::memset(section.heapSource, 0, static_cast<size_t>(rounded));
+        virtmemLock();
+        void* hostViewAddr = virtmemFindCodeMemory(rounded, 0);
+        VirtmemReservation* hostReservation =
+            hostViewAddr != nullptr ? virtmemAddReservation(hostViewAddr, rounded) : nullptr;
+        virtmemUnlock();
+        if (hostReservation == nullptr) {
+            throw std::runtime_error("No free address range found for the host guest-RAM alias view");
+        }
+        Result rc = svcMapProcessCodeMemory(self, reinterpret_cast<u64>(hostViewAddr),
+                                            reinterpret_cast<u64>(section.heapSource), rounded);
+        if (R_FAILED(rc)) {
+            throw std::runtime_error(SwitchErrorText("svcMapProcessCodeMemory for the host guest-RAM alias", rc));
+        }
+        rc = svcSetProcessMemoryPermission(self, reinterpret_cast<u64>(hostViewAddr), rounded, Perm_Rw);
+        if (R_FAILED(rc)) {
+            throw std::runtime_error(SwitchErrorText("making the host guest-RAM alias writable", rc));
+        }
+        section.hostView = static_cast<uint8_t*>(hostViewAddr);
 #else
         // The section is an anonymous shared-memory object: the SAME physical pages get mapped
         // twice below (once here as the always-accessible host view, once per-region as the
@@ -649,7 +789,8 @@ void Initialize(const std::vector<RegionRequest>& regions) {
 
     RT_LOG(RT_TAG_MEMORY) << "guest address space reserved at 0x" << std::hex
               << reinterpret_cast<uintptr_t>(g_base) << std::dec << " (" << MappedRegions().size()
-              << " regions, " << Sections().size() << " backing stores)" << std::endl;
+              << " regions, " << Sections().size() << " backing stores"
+              << (RequiresCheckedAccess() ? ", checked access" : ", flat access") << ")" << std::endl;
 }
 
 uint8_t* HostPointer(uint32_t guestAddress) {

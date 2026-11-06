@@ -19,6 +19,24 @@ inline constexpr size_t kGuestPageSize = 0x1000;
 // 16 TiB: clear of the Windows ASan shadow (32 TiB) and of the usual image/heap
 // placement.
 inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'1000'0000'0000ull;
+#elif defined(__SWITCH__)
+// No fixed base on Switch (ported from DriftDroid, dorPXP/driftdroid, GPL-3.0). Horizon places the
+// process's heap and alias regions at random addresses inside its 64 GiB ASLR region, and the code
+// memory that can carry several views may overlap neither, so any constant 4 GiB window collides on
+// some launches. Initialize() picks a free window per launch and publishes it here once, before any
+// translated code runs.
+//
+// Declared const (with a fixed symbol name) everywhere except guest_flat_memory.cpp, which owns the
+// one write: a mutable global could be aliased by any guest store (they go through uint8_t*), so
+// GCC would reload it before every guest access; a const object lets each translated function load
+// it once. Hidden visibility drops the GOT indirection.
+#if defined(MKW_GUEST_FLAT_BASE_WRITER)
+extern uintptr_t g_switchFlatGuestBase __asm__("mkw_switch_flat_guest_base")
+    __attribute__((visibility("hidden")));
+#else
+extern const uintptr_t g_switchFlatGuestBase __asm__("mkw_switch_flat_guest_base")
+    __attribute__((visibility("hidden")));
+#endif
 #elif defined(__aarch64__) && defined(__APPLE__)
 // Keep this well above the low address ranges that Darwin's ASLR may use for
 // a PIE executable and its shared cache. Apple Silicon's user VA is wider
@@ -42,7 +60,11 @@ inline constexpr uintptr_t kFixedFlatGuestBase = 0x0000'0040'0000'0000ull;
 #error "guest_flat_memory.h has no fixed flat guest base chosen for this architecture"
 #endif
 
+#if defined(__SWITCH__)
+#define MKW_FLAT_GUEST_BASE (reinterpret_cast<uint8_t*>(GuestFlat::g_switchFlatGuestBase))
+#else
 #define MKW_FLAT_GUEST_BASE (reinterpret_cast<uint8_t*>(GuestFlat::kFixedFlatGuestBase))
+#endif
 
 enum class Backing {
     Owned,
@@ -75,6 +97,10 @@ bool IsActive();
 // fold this to a compile-time false: it appears in every flat access and must
 // not become a hot-path load. Only AArch64, where the page size is a kernel
 // configuration (4/16/64 KiB), has to probe it at runtime.
+// Switch: Horizon refuses to reprotect the aliased code memory the guest views are made of, and
+// there is no fault handler that could resume a trapped access, so no interception works there.
+// The Switch build therefore uses the checked path unless sdmc:/switch/nsmbw/flat_memory.flag
+// exists (see guest_flat_memory.cpp).
 #if defined(_WIN32) || defined(__x86_64__)
 #define MKW_GUEST_FLAT_FIXED_PAGE_SIZE 1
 #endif

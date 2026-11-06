@@ -8,6 +8,13 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#elif defined(__SWITCH__)
+// Switch (devkitA64/libnx): the same AArch64 assembly context switch as Android (ELF spelling,
+// x18 untouched), on plain heap stacks - newlib has no mmap/mprotect, so there is no guard page.
+#include <cstdlib>
+
+extern "C" void mkw_co_switch(void** targetSp, void** sourceSp);
+extern "C" void* mkw_co_init(void* stackTop, void (*entry)(void*), void* argument);
 #elif (defined(__APPLE__) || defined(__ANDROID__)) && defined(__aarch64__)
 #include <sys/mman.h>
 #include <unistd.h>
@@ -76,6 +83,76 @@ bool IsCurrent(Handle context)
 void Switch(Handle target)
 {
     SwitchToFiber(target);
+}
+
+#elif defined(__SWITCH__)
+
+namespace {
+struct Context {
+    void* savedStackPointer = nullptr;
+    void* stack = nullptr;
+};
+
+// Guest scheduling is confined to the thread that initialized the scheduler.
+Context* g_current = nullptr;
+} // namespace
+
+bool InitializeScheduler(Handle* scheduler)
+{
+    auto* context = new Context();
+    g_current = context;
+    *scheduler = context;
+    return true;
+}
+
+void ShutdownScheduler(Handle scheduler)
+{
+    auto* context = static_cast<Context*>(scheduler);
+    if (g_current == context) {
+        g_current = nullptr;
+    }
+    delete context;
+}
+
+Handle Create(std::size_t stackSize, Entry entry, void* argument)
+{
+    auto* context = new Context();
+    context->stack = std::aligned_alloc(16, (stackSize + 15u) & ~std::size_t{15});
+    if (!context->stack) {
+        delete context;
+        return nullptr;
+    }
+    auto* stackTop = static_cast<char*>(context->stack) + ((stackSize + 15u) & ~std::size_t{15});
+    context->savedStackPointer = mkw_co_init(stackTop, entry, argument);
+    return context;
+}
+
+void Destroy(Handle context)
+{
+    auto* nativeContext = static_cast<Context*>(context);
+    if (!nativeContext) {
+        return;
+    }
+    std::free(nativeContext->stack);
+    delete nativeContext;
+}
+
+bool IsCurrent(Handle context)
+{
+    return context != nullptr && context == g_current;
+}
+
+void Switch(Handle target)
+{
+    auto* destination = static_cast<Context*>(target);
+    Context* source = g_current;
+    if (!destination || destination == source) {
+        return;
+    }
+
+    g_current = destination;
+    mkw_co_switch(&destination->savedStackPointer, &source->savedStackPointer);
+    g_current = source;
 }
 
 #elif (defined(__APPLE__) || defined(__ANDROID__)) && defined(__aarch64__)
