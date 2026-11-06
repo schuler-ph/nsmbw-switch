@@ -2,6 +2,11 @@
 
 #define IMGUI_DISABLE_DEFAULT_FILE_FUNCTIONS 1
 
+#if defined(__SWITCH__)
+// libnx homebrew has no fork()/execvp() for imgui's default "open in shell" (xdg-open) function.
+#define IMGUI_DISABLE_DEFAULT_SHELL_FUNCTIONS 1
+#endif
+
 typedef struct SDL_IOStream SDL_IOStream;
 typedef SDL_IOStream* ImFileHandle;
 typedef unsigned long long ImU64;

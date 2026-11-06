@@ -22,6 +22,7 @@ typedef enum {
   BACKEND_OPENGLES,
   BACKEND_WEBGPU,
   BACKEND_NULL,
+  BACKEND_DEKO3D,  // Nintendo Switch native GPU API (the Switch Dawn build's deko3d backend)
 } AuroraBackend;
 
 typedef enum {

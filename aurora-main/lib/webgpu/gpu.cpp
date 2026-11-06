@@ -40,6 +40,13 @@
 #include <windows.h>
 #endif
 
+#if defined(__SWITCH__) && defined(DAWN_ENABLE_BACKEND_OPENGLES)
+#include <dawn/native/OpenGLBackend.h>
+// lib/switch/gl_proc_table.c: name -> address for every switch-mesa EGL/GL export, standing in for
+// dlsym (no dynamic linking on Switch). Ported from DriftDroid.
+extern "C" void (*aurora_switch_gl_get_proc(const char* name))(void);
+#endif
+
 namespace aurora::gx {
 void clear_display_copy_cache() noexcept;
 } // namespace aurora::gx
@@ -624,6 +631,10 @@ static wgpu::BackendType to_wgpu_backend(AuroraBackend backend) {
     return wgpu::BackendType::OpenGL;
   case BACKEND_OPENGLES:
     return wgpu::BackendType::OpenGLES;
+#if defined(__SWITCH__)
+  case BACKEND_DEKO3D:
+    return wgpu::BackendType::Deko3d;
+#endif
   default:
     return wgpu::BackendType::Null;
   }
@@ -741,7 +752,16 @@ bool initialize(AuroraBackend auroraBackend, bool allowSoftware) {
     }
   }
   {
+#if defined(__SWITCH__) && defined(DAWN_ENABLE_BACKEND_OPENGLES)
+    // Dawn's GL backend wants an explicit EGL entry point rather than dlopening libEGL itself.
+    dawn::native::opengl::RequestAdapterOptionsGetGLProc glProcOptions;
+    glProcOptions.getProc = aurora_switch_gl_get_proc;
+    glProcOptions.display = nullptr;  // Dawn opens EGL_DEFAULT_DISPLAY itself
+#endif
     const wgpu::RequestAdapterOptions options{
+#if defined(__SWITCH__) && defined(DAWN_ENABLE_BACKEND_OPENGLES)
+        .nextInChain = backend == wgpu::BackendType::OpenGLES ? &glProcOptions : nullptr,
+#endif
         .featureLevel = is_compat_backend(backend) ? wgpu::FeatureLevel::Compatibility : wgpu::FeatureLevel::Core,
         .powerPreference = wgpu::PowerPreference::HighPerformance,
         .backendType = backend,

@@ -726,7 +726,12 @@ static bool prepare_pipeline_cache_db() {
     return false;
   }
 
+#if defined(__SWITCH__)
+  // See gpu_cache.cpp: no WAL and no on-disk journal on Horizon.
+  ret = sqlite::exec(g_pipelineCacheDb, "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF;");
+#else
   ret = sqlite::exec(g_pipelineCacheDb, "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;");
+#endif
   if (ret != SQLITE_OK) {
     Log.error("Failed to set pipeline cache pragmas: {}", sqlite3_errmsg(g_pipelineCacheDb));
     pipeline_cache_abort();

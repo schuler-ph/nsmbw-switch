@@ -622,6 +622,8 @@ constexpr const char* backend_name(AuroraBackend backend) noexcept {
     return "WebGPU";
   case BACKEND_NULL:
     return "Null";
+  case BACKEND_DEKO3D:
+    return "deko3d";
   }
   return "Unknown";
 }
@@ -630,6 +632,10 @@ constexpr const char* backend_name(AuroraBackend backend) noexcept {
 constexpr std::array PreferredBackendOrder{
 #ifdef ENABLE_BACKEND_WEBGPU
     BACKEND_WEBGPU,
+#endif
+#if defined(__SWITCH__)
+    // Switch: Dawn's deko3d backend first, its OpenGL ES backend over switch-mesa as the fallback.
+    BACKEND_DEKO3D,
 #endif
 #ifdef DAWN_ENABLE_BACKEND_D3D12
     BACKEND_D3D12,

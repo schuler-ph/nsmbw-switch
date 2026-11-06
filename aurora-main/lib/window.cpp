@@ -26,6 +26,14 @@
 #include <windows.h>
 #endif
 
+#if defined(__SWITCH__)
+// Switch window/applet glue ported from DriftDroid (dorPXP/driftdroid, GPL-3.0), lib/window.cpp.
+#include <switch.h>
+
+#include "switch/input_switch.hpp"
+extern "C" void AuroraSwitchRestoreControllers();  // lib/switch/input_switch.cpp
+#endif
+
 #if defined(SDL_PLATFORM_ANDROID)
 #include <jni.h>
 extern "C" void Android_LockActivityMutex(void);
@@ -58,6 +66,10 @@ int g_presentAspectHeight = 0;
 AuroraWindowSize g_windowSize;
 std::vector<AuroraEvent> g_events;
 std::atomic_bool g_backgrounded = false;
+#if defined(__SWITCH__)
+// Set from pump_events() when Horizon asks the program to quit; turned into an AURORA_EXIT event.
+std::atomic_bool g_appletExitRequested = false;
+#endif
 std::atomic_bool g_nativeResizePending = false;
 // A move, resize or display mode change this file asked for that SDL_SyncWindow has not waited
 // out yet. On X11 a sync with nothing pending still sleeps 10 ms whenever the window is not exactly
@@ -165,6 +177,12 @@ bool query_native_client_size(uint32_t& width, uint32_t& height) noexcept {
       return true;
     }
   }
+#elif defined(__SWITCH__)
+  // SDL's offscreen window reports a fake 1024x768; the real surface is always the 1280x720
+  // default NWindow.
+  width = 1280;
+  height = 720;
+  return true;
 #else
   (void)width;
   (void)height;
@@ -376,9 +394,20 @@ const AuroraEvent* poll_events() {
       Log.warn("SDL_WaitEvent failed: {}", SDL_GetError());
     }
   }
+#if defined(__SWITCH__)
+  // Before the events are read, so a controller that just connected is announced in this poll.
+  input::switch_pad::poll_connections();
+#endif
   while (SDL_PollEvent(&event)) {
     process_event(event);
   }
+#if defined(__SWITCH__)
+  if (g_appletExitRequested.load(std::memory_order_acquire)) {
+    g_events.push_back(AuroraEvent{
+        .type = AURORA_EXIT,
+    });
+  }
+#endif
   g_events.push_back(AuroraEvent{
       .type = AURORA_NONE,
   });
@@ -391,9 +420,13 @@ bool create_window(AuroraBackend backend) {
   flags |= SDL_WINDOW_FULLSCREEN;
 #else
   flags |= SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE;
+#if !defined(__SWITCH__)
+  // Not on Switch: SDL's offscreen driver would snap a fullscreen window to its fake 1024x768
+  // display mode; the real screen is always the default NWindow's 1280x720.
   if (g_config.startFullscreen) {
     flags |= SDL_WINDOW_FULLSCREEN;
   }
+#endif
   // AURORA_TEST_NOACTIVATE (automated runs on a PC someone is using): the window never takes focus.
   if (test_no_activate()) {
     flags |= SDL_WINDOW_NOT_FOCUSABLE;
@@ -412,7 +445,9 @@ bool create_window(AuroraBackend backend) {
     flags |= SDL_WINDOW_METAL;
     break;
 #endif
-#if defined(DAWN_ENABLE_BACKEND_OPENGL) && !defined(SDL_PLATFORM_ANDROID)
+#if defined(DAWN_ENABLE_BACKEND_OPENGL) && !defined(SDL_PLATFORM_ANDROID) && !defined(__SWITCH__)
+  // (On Switch Dawn owns the only EGL display/context, on the default NWindow; SDL's offscreen
+  // driver must not make a competing one.)
   // (On Android, Dawn makes its own EGL surface on the native window, which can hold only one.)
   case BACKEND_OPENGL:
   case BACKEND_OPENGLES:
@@ -509,6 +544,13 @@ bool initialize() {
   /* We don't want to initialize anything input related here, otherwise the add events will get lost to the void */
   TRY(SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight"), "Error setting {}: {}", SDL_HINT_ORIENTATIONS,
       SDL_GetError());
+#if defined(__SWITCH__)
+  // SDL3 has no Switch video backend. Presentation goes through Dawn on nwindowGetDefault(), so SDL
+  // only supplies a window object and the event loop; its offscreen driver does that, but SDL never
+  // picks it by itself ("No available video device").
+  TRY(SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen"), "Error setting {}: {}", SDL_HINT_VIDEO_DRIVER,
+      SDL_GetError());
+#endif
   TRY(SDL_InitSubSystem(SDL_INIT_EVENTS | SDL_INIT_VIDEO), "Error initializing SDL: {}", SDL_GetError());
 
 #if !defined(_WIN32) && !defined(__APPLE__)
@@ -556,6 +598,12 @@ AuroraWindowSize get_window_size() {
   ASSERT(SDL_GetWindowSize(g_window, &width, &height), "Failed to get window size: {}", SDL_GetError());
   ASSERT(SDL_GetWindowSizeInPixels(g_window, &native_fb_w, &native_fb_h), "Failed to get window size in pixels: {}",
          SDL_GetError());
+#if defined(__SWITCH__)
+  // The offscreen driver clamps windows to its 1024x768 fake display; the real surface is the
+  // 1280x720 default NWindow.
+  width = native_fb_w = 1280;
+  height = native_fb_h = 720;
+#endif
 
   int fb_w = native_fb_w;
   int fb_h = native_fb_h;
@@ -649,6 +697,16 @@ bool is_presentable() noexcept {
 }
 
 void pump_events() noexcept {
+#if defined(__SWITCH__)
+  // SDL's offscreen driver never talks to the applet layer, so nothing else answers Horizon's
+  // messages (sleep, wake, focus, docked/handheld). An unanswered sleep request crashes the
+  // system's operation-mode manager, taking the console down with it.
+  if (!appletMainLoop() && !g_appletExitRequested.exchange(true, std::memory_order_acq_rel)) {
+    Log.info("applet requested exit");
+    // The process is ended from outside after this (no atexit), so restore the controllers here.
+    AuroraSwitchRestoreControllers();
+  }
+#endif
   if (g_window != nullptr && g_windowSyncPending.exchange(false, std::memory_order_acq_rel)) {
     SDL_SyncWindow(g_window);
   }

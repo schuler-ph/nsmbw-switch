@@ -1,5 +1,8 @@
 #include "input.hpp"
 #include "internal.hpp"
+#if defined(__SWITCH__)
+#include "switch/input_switch.hpp"
+#endif
 
 #include "magic_enum.hpp"
 
@@ -274,6 +277,11 @@ bool is_instance_claimed(const std::array<Uint32, PAD_MAX_CONTROLLERS>& claimedC
 }
 
 void apply_port_preferences() noexcept {
+#if defined(__SWITCH__)
+  // The Switch's controllers are one virtual gamepad per console player number
+  // (switch/input_switch.cpp), so the port is the console's own order.
+  return;
+#endif
   ensure_port_preferences_loaded();
   if (!std::any_of(g_portPreferences.begin(), g_portPreferences.end(),
                    [](const auto& preference) { return preference.state != PortPreferenceState::Unset; })) {
@@ -568,6 +576,10 @@ void initialize() noexcept {
    * as expected */
   ASSERT(SDL_Init(SDL_INIT_HAPTIC | SDL_INIT_JOYSTICK | SDL_INIT_GAMEPAD), "Failed to initialize SDL subsystems: {}",
          SDL_GetError());
+#if defined(__SWITCH__)
+  // SDL has no Switch joystick backend: the console's controllers become SDL virtual gamepads.
+  switch_pad::attach();
+#endif
 }
 
 struct MouseScrollStatus {
