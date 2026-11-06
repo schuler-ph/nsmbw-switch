@@ -715,7 +715,17 @@ static void ScanDirectory(const fs::path& root, const std::string& virtualPrefix
             return;
         }
 
+#if defined(__SWITCH__)
+        // fs::relative canonicalises through realpath, which newlib cannot do on sdmc:, so every
+        // file was dropped and the disc index stayed empty. The iterator's paths all start with
+        // root, so the lexical form is exact.
+        const fs::path relative = entry.path().lexically_relative(root);
+        if (relative.empty()) {
+            return;
+        }
+#else
         const fs::path relative = fs::relative(entry.path(), root, entryEc);
+#endif
         if (entryEc) {
             return;
         }

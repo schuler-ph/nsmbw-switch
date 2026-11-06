@@ -71,7 +71,12 @@ inline std::string GameSaveKey() {
     for (std::filesystem::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
         std::error_code fileError;
         if (it->is_regular_file(fileError)) {
+#if defined(__SWITCH__)
+            // No realpath on sdmc: (see dvd.cpp's disc index); the lexical form is exact here.
+            const auto relative = it->path().lexically_relative(root).generic_u8string();
+#else
             const auto relative = std::filesystem::relative(it->path(), root, fileError).generic_u8string();
+#endif
             files.emplace_back(std::string(relative.begin(), relative.end()), it->file_size(fileError));
         }
     }
