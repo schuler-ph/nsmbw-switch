@@ -226,7 +226,16 @@ ssize_t TeeWrite(int stream, const char* data, size_t length) {
         while (sent < length) {
             const ssize_t chunk = send(g_nxlinkSocket, data + sent, length - sent, 0);
             if (chunk <= 0) {
+                const int sendErrno = errno;
                 g_nxlinkSocket = -1;  // the PC went away; keep writing the file
+                if (g_logFile[2] >= 0) {
+                    char note[96];
+                    const int noteLength = std::snprintf(note, sizeof(note),
+                        "\n[switch] nxlink stdio lost: send returned %zd, errno %d\n", chunk, sendErrno);
+                    if (noteLength > 0) {
+                        (void)write(g_logFile[2], note, static_cast<size_t>(noteLength));
+                    }
+                }
                 break;
             }
             sent += static_cast<size_t>(chunk);
