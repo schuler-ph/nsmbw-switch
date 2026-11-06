@@ -1,5 +1,6 @@
 #pragma once
 
+#include "host_file_copy.h"
 #include "runtime_config.h"
 #include "nand_settings.h"
 #include "runtime_log.h"
@@ -158,15 +159,27 @@ inline bool CopyBootstrapFile(const std::filesystem::path& sourceRoot,
                               std::error_code& ec) {
     const auto source = sourceRoot / relativePath;
     const auto destination = destinationRoot / relativePath;
+    auto copyOptions = std::filesystem::copy_options::none;
     if (std::filesystem::exists(destination, ec)) {
-        return !ec;
+        if (ec) {
+            return false;
+        }
+        // A copy that failed half-way (Switch: libstdc++ copy_file before HostFileCopy) leaves an
+        // empty file; replace that one instead of trusting it.
+        const auto destinationSize = std::filesystem::file_size(destination, ec);
+        const auto sourceSize = ec ? 0 : std::filesystem::file_size(source, ec);
+        if (ec || destinationSize != 0 || sourceSize == 0) {
+            ec.clear();
+            return true;
+        }
+        copyOptions = std::filesystem::copy_options::overwrite_existing;
     }
 
     std::filesystem::create_directories(destination.parent_path(), ec);
     if (ec) {
         return false;
     }
-    std::filesystem::copy_file(source, destination, std::filesystem::copy_options::none, ec);
+    HostFileCopy::CopyFile(source, destination, copyOptions, ec);
     return !ec;
 }
 

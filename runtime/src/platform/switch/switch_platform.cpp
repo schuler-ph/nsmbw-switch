@@ -17,8 +17,13 @@
 #include <string>
 #include <thread>
 
+#include <fcntl.h>
 #include <malloc.h>
+#include <netinet/in.h>
+#include <sys/iosupport.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <switch.h>
 
 namespace {
@@ -99,7 +104,6 @@ extern "C" int __wrap___syscall_thread_create(void** thread, void* entry, void* 
 // __syscall_thread_detach is missing, so every std::thread::detach() throws (DVD reads, VI and the
 // network lookups detach their workers). Supply it: a detached thread is handed to one reaper
 // thread that joins them in turn, which frees each thread's stack once it has finished.
-extern "C" void* __syscall_thread_join(void* thread);
 namespace {
 std::mutex& ReaperMutex() {
     static std::mutex mutex;
@@ -122,12 +126,12 @@ void ReaperMain() {
             thread = ReaperQueue().front();
             ReaperQueue().pop_front();
         }
-        __syscall_thread_join(thread);
+        __syscall_thread_join(static_cast<struct __pthread_t*>(thread));
     }
 }
 } // namespace
 
-extern "C" int __syscall_thread_detach(void* thread) {
+extern "C" int __syscall_thread_detach(struct __pthread_t* thread) {
     static std::once_flag started;
     std::call_once(started, [] {
         // The reaper itself is never detached (that would recurse): it is created once and leaked.
@@ -198,6 +202,66 @@ extern "C" int64_t mbedtls_ms_time(void) {
     return static_cast<int64_t>(armTicksToNs(armGetSystemTick()) / 1000000ull);
 }
 
+namespace {
+
+// stdout and stderr go to their file on the SD card and, for an nxlink launch (nxlink -s), to the
+// PC as well: libnx's nxlinkStdio() would replace the files, so both descriptors get a small
+// device that writes every chunk to both places.
+int g_logFile[3] = {-1, -1, -1};
+int g_nxlinkSocket = -1;
+
+ssize_t TeeWrite(int stream, const char* data, size_t length) {
+    if (g_logFile[stream] >= 0) {
+        size_t written = 0;
+        while (written < length) {
+            const ssize_t chunk = write(g_logFile[stream], data + written, length - written);
+            if (chunk <= 0) {
+                break;
+            }
+            written += static_cast<size_t>(chunk);
+        }
+    }
+    if (g_nxlinkSocket >= 0) {
+        size_t sent = 0;
+        while (sent < length) {
+            const ssize_t chunk = send(g_nxlinkSocket, data + sent, length - sent, 0);
+            if (chunk <= 0) {
+                g_nxlinkSocket = -1;  // the PC went away; keep writing the file
+                break;
+            }
+            sent += static_cast<size_t>(chunk);
+        }
+    }
+    return static_cast<ssize_t>(length);
+}
+
+ssize_t TeeStdout(struct _reent*, void*, const char* data, size_t length) {
+    return TeeWrite(1, data, length);
+}
+
+ssize_t TeeStderr(struct _reent*, void*, const char* data, size_t length) {
+    return TeeWrite(2, data, length);
+}
+
+devoptab_t g_teeStdout{};
+devoptab_t g_teeStderr{};
+
+void StartLogTee() noexcept {
+    g_logFile[1] = open("sdmc:/switch/nsmbw/log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    g_logFile[2] = open("sdmc:/switch/nsmbw/stderr.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (__nxlink_host.s_addr != 0 && R_SUCCEEDED(socketInitializeDefault())) {
+        g_nxlinkSocket = nxlinkConnectToHost(false, false);
+    }
+    g_teeStdout.name = "stdout";
+    g_teeStdout.write_r = TeeStdout;
+    g_teeStderr.name = "stderr";
+    g_teeStderr.write_r = TeeStderr;
+    devoptab_list[STD_OUT] = &g_teeStdout;
+    devoptab_list[STD_ERR] = &g_teeStderr;
+}
+
+} // namespace
+
 namespace SwitchPlatform {
 
 bool InAppletMode() noexcept {
@@ -208,9 +272,7 @@ bool InAppletMode() noexcept {
 void EarlyInit() noexcept {
     mkdir("sdmc:/switch", 0777);
     mkdir(kDataDirectory, 0777);
-    // An nxlink launch replaces these descriptors again later, which is intended.
-    std::freopen("sdmc:/switch/nsmbw/log.txt", "w", stdout);
-    std::freopen("sdmc:/switch/nsmbw/stderr.txt", "w", stderr);
+    StartLogTee();
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::setvbuf(stderr, nullptr, _IONBF, 0);
 
@@ -224,6 +286,7 @@ void EarlyInit() noexcept {
                  AppletTypeName(appletGetAppletType()), static_cast<unsigned long long>(totalMemory >> 20),
                  static_cast<unsigned long long>(SwitchModuleBase()), svcGetCurrentProcessorNumber());
     std::fprintf(stderr, "[switch] data folder %s, game folder %s\n", kDataDirectory, kGameDirectory);
+    std::fprintf(stderr, "[switch] nxlink stdio: %s\n", g_nxlinkSocket >= 0 ? "connected" : "off");
 }
 
 void ShowConsoleMessage(const std::string& text) noexcept {
@@ -248,6 +311,12 @@ void ShowErrorDialog(const std::string& shortText, const std::string& longText) 
     if (R_SUCCEEDED(errorApplicationCreate(&config, shortText.c_str(), longText.c_str()))) {
         errorApplicationShow(&config);
     }
+}
+
+[[noreturn]] void TerminateNow(int code) noexcept {
+    std::fflush(stdout);
+    std::fflush(stderr);
+    std::_Exit(code);
 }
 
 } // namespace SwitchPlatform

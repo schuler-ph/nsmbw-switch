@@ -1,4 +1,5 @@
 #include "netplay_start.h"
+#include "host_file_copy.h"
 
 #include "aurora_events.h"
 #include "nand_path.h"
@@ -165,7 +166,7 @@ void RecoverHostSave() {
     }
     const auto played = SessionNand() / save;
     if (std::filesystem::exists(played, ec)) {
-        std::filesystem::copy_file(played, mine, std::filesystem::copy_options::overwrite_existing, ec);
+        HostFileCopy::CopyFile(played, mine, std::filesystem::copy_options::overwrite_existing, ec);
         RT_LOGF(RT_TAG_RUNTIME, "netplay: kept the save from the last session you hosted, %s (%s)\n",
                 RuntimeConfigFile::PathToUtf8(mine).c_str(), ec ? ec.message().c_str() : "ok");
     }
@@ -241,7 +242,7 @@ void PrepareToLeave() {
         const auto mine = RuntimeNandPath::ResolveNandRootPath() / SaveFile();
         const auto played = SessionNand() / SaveFile();
         if (std::filesystem::exists(played, ec)) {
-            std::filesystem::copy_file(played, mine, std::filesystem::copy_options::overwrite_existing, ec);
+            HostFileCopy::CopyFile(played, mine, std::filesystem::copy_options::overwrite_existing, ec);
             RT_LOGF(RT_TAG_RUNTIME, "netplay: kept the session's save (%s)\n", ec ? ec.message().c_str() : "ok");
         }
     }

@@ -4,6 +4,7 @@
 // Shared state and helpers live in nand_internal.h.
 
 #include "nand_internal.h"
+#include "host_file_copy.h"
 
 // Guest callback dispatch: host NAND work completes synchronously, so an "async" call just
 // queues its guest completion callback here and an HLE pump dispatches it later.
@@ -455,7 +456,7 @@ extern "C" int32_t NANDSafeOpen_HLE(uint32_t pathPtr, uint32_t fileInfoPtr, uint
     // The scratch file starts as a byte-for-byte copy of the original and the guest is
     // positioned at offset 0, so partial writes keep the bytes they never touch.
     std::error_code ec;
-    std::filesystem::copy_file(hostPath, tempPath,
+    HostFileCopy::CopyFile(hostPath, tempPath,
                                std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
         LogNandError("NANDSafeOpen", "FAILED to seed scratch file '%s' from '%s': %s",

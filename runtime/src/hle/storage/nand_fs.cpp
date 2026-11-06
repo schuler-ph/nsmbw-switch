@@ -2,6 +2,7 @@
 // <nand_root>\title\00010000\534d4e45\data\... on the host.
 
 #include "nand_internal.h"
+#include "host_file_copy.h"
 
 #include "isa/big_endian.h"
 #include "hle/storage/riivolution.h"
@@ -226,7 +227,7 @@ static void CloneRiivolutionSaveIfNeeded(const std::filesystem::path& sourceHost
     CreateParentDirectories(redirectedHostPath);
 
     std::error_code ec;
-    std::filesystem::copy_file(sourceHostPath, redirectedHostPath,
+    HostFileCopy::CopyFile(sourceHostPath, redirectedHostPath,
                                std::filesystem::copy_options::skip_existing, ec);
     if (ec) {
         LogNandWarning("RiivolutionSave", "WARNING: failed to clone '%s' -> '%s': %s",

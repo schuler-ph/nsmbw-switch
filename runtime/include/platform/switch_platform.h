@@ -22,8 +22,9 @@ namespace SwitchPlatform {
 inline constexpr const char* kDataDirectory = "sdmc:/switch/nsmbw";
 inline constexpr const char* kGameDirectory = "sdmc:/switch/nsmbw/game";
 
-// First thing in RuntimeMain: creates the data folder, points stdout/stderr at log.txt and
-// stderr.txt (unbuffered, so a crash loses nothing) and logs the launch facts (applet type, memory).
+// First thing in RuntimeMain: creates the data folder, sends stdout/stderr to log.txt and
+// stderr.txt (unbuffered, so a crash loses nothing) and, when started through nxlink, also live to
+// the PC (nxlink -s), then logs the launch facts (applet type, memory).
 void EarlyInit() noexcept;
 
 // True when the program runs as a library applet (hbmenu opened from the Album). That mode gets far
@@ -36,6 +37,10 @@ void ShowConsoleMessage(const std::string& text) noexcept;
 
 // Shows `text` in the system's error dialog (works while aurora owns the screen). Logged as well.
 void ShowErrorDialog(const std::string& shortText, const std::string& longText) noexcept;
+
+// Ends the process at once, without atexit handlers or static destructors (other threads such as
+// the shader compiler may still be running). stdout/stderr are unbuffered, so the logs are complete.
+[[noreturn]] void TerminateNow(int code) noexcept;
 
 } // namespace SwitchPlatform
 

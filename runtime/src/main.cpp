@@ -849,10 +849,19 @@ void ShowRuntimeFatalPopup(std::string_view category, std::string_view details) 
 #if defined(__linux__) && !defined(__ANDROID__)
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "NSMBW - Fatal Error", message.c_str(), nullptr);
 #endif
+#if defined(__SWITCH__)
+        SwitchPlatform::ShowErrorDialog(std::string(category.empty() ? "Fatal error" : category), message);
+#endif
 #endif
     } catch (...) {
         // Reporting a crash must never throw or mask the original failure.
     }
+#if defined(__SWITCH__)
+    // Every caller ends the process next. On Switch, std::exit runs static destructors that tear
+    // down Dawn/deko3d while the pipeline worker may still be compiling a shader (the GLSL compiler
+    // in libuam); that crashed the first hardware run on its way out. Leave without them.
+    SwitchPlatform::TerminateNow(EXIT_FAILURE);
+#endif
 }
 
 void EndProcessTranscript() {
