@@ -296,6 +296,19 @@ void EarlyInit() noexcept {
                  static_cast<unsigned long long>(SwitchModuleBase()), svcGetCurrentProcessorNumber());
     std::fprintf(stderr, "[switch] data folder %s, game folder %s\n", kDataDirectory, kGameDirectory);
     std::fprintf(stderr, "[switch] nxlink stdio: %s\n", g_nxlinkSocket >= 0 ? "connected" : "off");
+    // Horizon has no environment for a launch; sdmc:/switch/nsmbw/gfx_flags.txt stands in for
+    // AURORA_GFX_FLAGS (for example "validate" turns Dawn's validation back on).
+    if (FILE* flags = std::fopen("sdmc:/switch/nsmbw/gfx_flags.txt", "r")) {
+        char value[256] = {};
+        const size_t length = std::fread(value, 1, sizeof(value) - 1, flags);
+        std::fclose(flags);
+        value[length] = 0;
+        for (size_t i = length; i > 0 && (value[i - 1] == '\n' || value[i - 1] == '\r' || value[i - 1] == ' '); --i) {
+            value[i - 1] = 0;
+        }
+        setenv("AURORA_GFX_FLAGS", value, 1);
+        std::fprintf(stderr, "[switch] AURORA_GFX_FLAGS=%s (gfx_flags.txt)\n", value);
+    }
 }
 
 void ShowConsoleMessage(const std::string& text) noexcept {
