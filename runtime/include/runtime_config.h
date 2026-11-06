@@ -1353,6 +1353,14 @@ inline std::string DvdRoot(std::string fallback = "") {
 inline std::filesystem::path ResolveRelativeTo(const std::filesystem::path& base,
                                                const std::string& value) {
     std::filesystem::path path = PathFromUtf8(value);
+#if defined(__SWITCH__)
+    // newlib's std::filesystem has no root-name, so a device path such as "sdmc:/switch/nsmbw/game"
+    // counts as relative and was joined onto the config folder ("sdmc:/switch/nsmbw/sdmc:/...").
+    const auto device = value.find(":/");
+    if (device != std::string::npos && device > 0 && value.find('/') == device + 1) {
+        return path.lexically_normal();
+    }
+#endif
     if (path.is_relative()) {
         path = base / path;
     }
