@@ -23,7 +23,19 @@
 #include <windows.h>
 #else
 #include <sys/socket.h>
+#if defined(__SWITCH__)
+// Horizon has no Unix-domain sockets (and no Discord client to talk to): enough of the declaration
+// for this file to compile; connect() then simply fails and presence stays off.
+struct sockaddr_un {
+    sa_family_t sun_family;
+    char sun_path[108];
+};
+#ifndef AF_UNIX
+#define AF_UNIX 1
+#endif
+#else
 #include <sys/un.h>
+#endif
 #include <unistd.h>
 #endif
 

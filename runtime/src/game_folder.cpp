@@ -20,6 +20,8 @@
 
 #include <cstdio>
 #include <unistd.h>
+#elif defined(__SWITCH__)
+#include "platform/switch_platform.h"
 #endif
 
 namespace GameFolder {
@@ -232,7 +234,29 @@ std::string Problem(const fs::path& root) {
 }
 
 bool EnsureConfigured() {
-#if defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
+#if defined(__SWITCH__)
+    // One fixed place on the SD card, no picker: sdmc:/switch/nsmbw/game holds the player's own
+    // extracted disc (files/ and sys/, as Dolphin's "Extract Entire Disc" makes it). A dvd_root in
+    // Config.toml is only used when that folder is absent.
+    const fs::path fixed = fs::path(SwitchPlatform::kGameDirectory);
+    fs::path root = Find(fixed);
+    if (root.empty()) {
+        root = Find(RuntimeConfigFile::ResolvedDvdRoot());
+    } else {
+        RuntimeConfigFile::UseDvdRootForThisRun(root);
+    }
+    const std::string problem = Problem(root.empty() ? fixed : root);
+    if (!problem.empty()) {
+        SwitchPlatform::ShowErrorDialog(
+            "The game data is missing or wrong.",
+            problem + "\n\nCopy your own extracted " + std::string(RuntimeProduct::Active().discName) +
+                " (the folder with files/ and sys/ that Dolphin's \"Extract Entire Disc\" makes) to "
+                "sdmc:/switch/nsmbw/game/ and start again.");
+        return false;
+    }
+    RT_LOGF(RT_TAG_RUNTIME, "game folder: %s\n", RuntimeConfigFile::PathToUtf8(root).c_str());
+    return true;
+#elif defined(_WIN32) || (defined(__linux__) && !defined(__ANDROID__))
     // A "game" folder next to the program needs no questions, and wins over the saved folder: every
     // install shares Documents\MarioWiiSaveData, so this is how two installs play two games (say the
     // original and a mod), each with its own saves (nand_path.h keeps saves per game).
@@ -246,6 +270,7 @@ bool EnsureConfigured() {
         return true;
     }
 #endif
+#if !defined(__SWITCH__)
     const fs::path configured = Find(RuntimeConfigFile::ResolvedDvdRoot());
     if (!configured.empty() && Problem(configured).empty()) {
         return true;
@@ -317,6 +342,7 @@ bool EnsureConfigured() {
     }
     return true;
 #endif
+#endif // !__SWITCH__
 }
 
 } // namespace GameFolder

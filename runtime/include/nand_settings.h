@@ -212,6 +212,10 @@ inline bool Ensure(const std::filesystem::path& root, std::string& error,
             // since the winner is re-read from NAND below either way.
             std::error_code existsEc;
             if (!std::filesystem::exists(path, existsEc) && !existsEc) {
+#if defined(__SWITCH__)
+                // Horizon's filesystem refuses to rename onto an existing file (DriftDroid).
+                std::remove(path.c_str());
+#endif
                 published = std::rename(temporary.c_str(), path.c_str()) == 0;
             }
         }

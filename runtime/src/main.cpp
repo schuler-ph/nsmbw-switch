@@ -61,6 +61,9 @@
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <SDL3/SDL_messagebox.h>
 #endif
+#if defined(__SWITCH__)
+#include "platform/switch_platform.h"
+#endif
 
 #include "netplay_ui.h"
 #include "netplay_start.h"
@@ -360,6 +363,14 @@ void CloseFileDescriptor(int fd) {
 #endif
 
 bool InstallTranscriptPipe(int& outReadFd, int& outWriteFd, int targetFd) {
+#if defined(__SWITCH__)
+    // newlib on Horizon has no pipe(); stdout/stderr already go to files on the SD card
+    // (SwitchPlatform::EarlyInit), so the transcript is not set up there at all.
+    (void)outReadFd;
+    (void)outWriteFd;
+    (void)targetFd;
+    return false;
+#else
 #if defined(_WIN32)
     int pipeFds[2]{-1, -1};
     if (_pipe(pipeFds, 8192, _O_BINARY) != 0) {
@@ -388,6 +399,7 @@ bool InstallTranscriptPipe(int& outReadFd, int& outWriteFd, int targetFd) {
         return false;
     }
     return true;
+#endif // !__SWITCH__
 }
 
 #if defined(_WIN32)
@@ -1199,7 +1211,9 @@ void InstallSehLogger() {
         SetUnhandledExceptionFilter(UnhandledSehFilter);
     }
 }
-#else
+#elif !defined(__SWITCH__)
+// (Switch: faults arrive through __libnx_exception_handler in platform/switch/switch_platform.cpp;
+// Horizon has no POSIX signals.)
 // POSIX counterpart to SehLogger above. Unlike Windows' AddVectoredExceptionHandler, which lets
 // GuestFlat and this module each install their own handler and defensively re-check each other,
 // sigaction only allows one handler per signal - the second registration replaces the first
@@ -1408,6 +1422,28 @@ static void TerminateHandler() {
 
 // Runtime entry point: loads the configuration, brings up aurora and runs the game.
 int RuntimeMain(int argc, char** argv) {
+#if defined(__SWITCH__)
+    // Opened as an applet (hbmenu from the Album) the program gets far too little memory and the
+    // game aborts while starting; say so instead (DriftDroid's launcher does the same). An empty
+    // sdmc:/switch/nsmbw/allow_applet.flag skips the check for experiments.
+    if (SwitchPlatform::InAppletMode()) {
+        FILE* allow = std::fopen("sdmc:/switch/nsmbw/allow_applet.flag", "r");
+        if (allow == nullptr) {
+            SwitchPlatform::ShowConsoleMessage(
+                "NSMBW Recompiled was opened as an applet (from the Album).\n"
+                "That mode has far too little memory for the game.\n\n"
+                "Start it through a title override instead: hold R while starting any\n"
+                "installed game, then pick nsmbw.nro in the homebrew menu.");
+            SwitchPlatform::EarlyInit();
+            std::fprintf(stderr, "[switch] refused to start in applet mode\n");
+            return 0;
+        }
+        std::fclose(allow);
+    }
+    // Before anything prints: stdout/stderr go to log.txt / stderr.txt on the SD card.
+    SwitchPlatform::EarlyInit();
+    // CPU faults reach __libnx_exception_handler (platform/switch/switch_platform.cpp).
+#endif
     // Must run before the transcript duplicates stdout/stderr: it decides what
     // those descriptors are mirrored to now that the products are GUI-subsystem.
     AttachParentConsoleForDiagnostics();
@@ -1415,7 +1451,7 @@ int RuntimeMain(int argc, char** argv) {
     ConfigureWindowsFatalDialogBehavior();
     InstallSehLogger();
     WindowsTimerResolutionGuard timerResolutionGuard;
-#else
+#elif !defined(__SWITCH__)
     InstallPosixMemoryFaultHandler();
 #endif
     InitializeProcessTranscript(argc, argv);
@@ -1427,9 +1463,14 @@ int RuntimeMain(int argc, char** argv) {
     std::string currentEntryLabel;
 
     try {
+#if defined(__SWITCH__)
+        // hbloader passes the .nro's own path as argv[0], and nxlink may add its own arguments.
+        (void)argc;
+#else
         if (argc != 1) {
             throw std::invalid_argument("The game runtime does not accept command-line options; use Config.toml through the installed host.");
         }
+#endif
         RuntimeConfigFile::LogLoadedConfig();
         // The player's own extracted game (game_folder.h); on Windows it is asked for at first start.
         if (!GameFolder::EnsureConfigured()) {
@@ -1577,6 +1618,12 @@ int RuntimeMain(int argc, char** argv) {
         static constexpr std::array<GraphicsBackendEntry, 2> kGraphicsBackends{{
             {"auto", BACKEND_AUTO}, {"metal", BACKEND_METAL},
         }};
+#elif defined(__SWITCH__)
+        // deko3d (Dawn's deko3d backend) is the Switch renderer; OpenGL ES over switch-mesa is the
+        // fallback (DriftDroid's choice).
+        static constexpr std::array<GraphicsBackendEntry, 3> kGraphicsBackends{{
+            {"auto", BACKEND_AUTO}, {"deko3d", BACKEND_DEKO3D}, {"opengles", BACKEND_OPENGLES},
+        }};
 #elif defined(__ANDROID__)
         // NSMBW: OpenGL ES can't be picked for now (walled off for a later version); a saved
         // "opengles" runs Vulkan.
@@ -1610,6 +1657,12 @@ int RuntimeMain(int argc, char** argv) {
                 break;
             }
         }
+#if defined(__SWITCH__)
+        // "auto" means deko3d here; aurora falls back to OpenGL ES when deko3d does not come up.
+        if (auroraConfig.desiredBackend == BACKEND_AUTO) {
+            auroraConfig.desiredBackend = BACKEND_DEKO3D;
+        }
+#endif
         const AuroraBackend requestedBackend = auroraConfig.desiredBackend;
 
         // SDL only reads its Wii driver hint when the joystick subsystem starts, which

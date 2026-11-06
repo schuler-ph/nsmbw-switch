@@ -36,6 +36,10 @@
 #include <stdexcept>
 #include <string>
 
+#if defined(__SWITCH__)
+extern "C" void randomGet(void* buf, size_t len);  // libnx: the kernel's CSPRNG
+#endif
+
 namespace WiiEsCrypto {
 
 using EcSignature = std::array<uint8_t, 60>;
@@ -150,7 +154,18 @@ inline EcSignature SignMessage(const uint8_t* key, const uint8_t* data, size_t s
         throw std::runtime_error("Crypto++ returned an unexpected sect233r1 signature size");
     }
 
+#if defined(__SWITCH__)
+    // Crypto++ knows no OS random source on Horizon (no AutoSeededRandomPool); libnx's
+    // randomGet() reads the kernel's CSPRNG.
+    struct HorizonRandom final : CryptoPP::RandomNumberGenerator {
+        void GenerateBlock(CryptoPP::byte* output, size_t size) override {
+            ::randomGet(output, size);
+        }
+    };
+    thread_local HorizonRandom random;
+#else
     thread_local CryptoPP::AutoSeededRandomPool random;
+#endif
     EcSignature signature{};
     const size_t written = signer.SignMessage(random, data, size, signature.data());
     if (written != signature.size()) {

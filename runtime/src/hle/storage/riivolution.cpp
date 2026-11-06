@@ -104,7 +104,12 @@ void RiivoAddRoot(std::vector<RuntimeRiivolution::Overlay>& overlays, fs::path r
         return;
     }
 
+#if defined(__SWITCH__)
+    // Paths carry a device prefix ("sdmc:/"), which canonicalisation is not written for.
+    fs::path normalized = root.lexically_normal();
+#else
     fs::path normalized = fs::weakly_canonical(root, ec);
+#endif
     if (ec) {
         normalized = root.lexically_normal();
     }

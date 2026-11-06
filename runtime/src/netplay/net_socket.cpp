@@ -20,7 +20,9 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <fcntl.h>
+#if !defined(__SWITCH__)
 #include <ifaddrs.h>
+#endif
 #include <net/if.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -337,6 +339,9 @@ std::vector<LocalInterface> LocalInterfaces() {
         }
         break;
     }
+#elif defined(__SWITCH__)
+    // No getifaddrs on Horizon; LAN play is not part of the Switch port yet.
+    return result;
 #else
     ifaddrs* list = nullptr;
     if (getifaddrs(&list) != 0) {

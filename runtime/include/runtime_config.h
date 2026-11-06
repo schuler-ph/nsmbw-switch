@@ -191,6 +191,8 @@ inline bool IsSupportedResolutionMultiplier(float value) {
 inline bool IsSupportedGraphicsApi(std::string_view value) {
 #if defined(__APPLE__)
     static constexpr std::array<std::string_view, 2> values{"auto", "metal"};
+#elif defined(__SWITCH__)
+    static constexpr std::array<std::string_view, 3> values{"auto", "deko3d", "opengles"};
 #elif defined(__ANDROID__)
     static constexpr std::array<std::string_view, 3> values{"auto", "vulkan", "opengles"};
 // only vulkan for linux
@@ -243,6 +245,11 @@ inline std::optional<std::filesystem::path> ExecutableDirectory() {
     }
 #elif defined(__APPLE__) || defined(__ANDROID__)
     return RuntimePlatform::ExecutableDirectory();
+#elif defined(__SWITCH__)
+    // The .nro sits anywhere on the SD card; its data files (dsp_coef.bin,
+    // initial_pipeline_cache.db, wii_bootstrap/) live in the one fixed folder of
+    // platform/switch_platform.h.
+    return std::filesystem::path("sdmc:/switch/nsmbw");
 #else
     // /proc/self/exe is a Linux-specific magic symlink to the running executable; readlink()
     // does not NUL-terminate and silently truncates if the buffer is too small, so this grows
@@ -404,6 +411,10 @@ inline std::filesystem::path BaseApplicationDataDirectory() {
     }
 #elif defined(__APPLE__) || defined(__ANDROID__)
     return RuntimePlatform::ApplicationDataDirectory(kApplicationDirectoryName);
+#elif defined(__SWITCH__)
+    // Settings, saves (NAND/), caches and logs: the same fixed SD folder as everything else
+    // (platform/switch_platform.h).
+    return std::filesystem::path("sdmc:/switch/nsmbw");
 #else
     // XDG Base Directory spec equivalent of FOLDERID_LocalAppData: $XDG_DATA_HOME if set and
     // non-empty, otherwise its default of $HOME/.local/share.
