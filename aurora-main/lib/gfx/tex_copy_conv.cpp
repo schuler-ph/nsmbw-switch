@@ -506,7 +506,17 @@ void initialize() {
 
   // Native RAM readback uses RGBA even when the EFB/surface uses BGRA.
   // Build both variants here; frame workers only read the completed map.
+#if defined(__SWITCH__)
+  // The Switch's deko3d backend has no BGRA: a BGRA blit pipeline put the deko3d queue into an
+  // error state at the first EFB copy. Build RGBA and the surface's own format instead
+  // (DriftDroid, dorPXP/driftdroid, GPL-3.0, aurora-main/lib/gfx/tex_copy_conv.cpp).
+  for (const auto format : {wgpu::TextureFormat::RGBA8Unorm, webgpu::g_graphicsConfig.surfaceConfiguration.format}) {
+    if (g_blitPipelines.contains(format)) {
+      continue;
+    }
+#else
   for (const auto format : {wgpu::TextureFormat::RGBA8Unorm, wgpu::TextureFormat::BGRA8Unorm}) {
+#endif
     g_blitPipelines[format] = create_pipeline(
         {GX_TF_RGBA8, FragPassthrough, format, "TexCopyConv Blit"}, ShaderPreamble, g_bindGroupLayout);
   }

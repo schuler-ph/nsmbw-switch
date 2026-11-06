@@ -260,6 +260,13 @@ struct FrameWorkerState {
 FrameWorkerState g_frameWorker;
 
 bool gl_single_thread() noexcept {
+#if defined(__SWITCH__)
+  // Dawn's deko3d backend (from DriftDroid) is driven from one thread there; the frame worker and
+  // presenter threads left the first hardware runs with a black screen. Treat it like GL.
+  if (webgpu::g_backendType == wgpu::BackendType::Deko3d) {
+    return true;
+  }
+#endif
   return webgpu::g_backendType == wgpu::BackendType::OpenGL || webgpu::g_backendType == wgpu::BackendType::OpenGLES;
 }
 
