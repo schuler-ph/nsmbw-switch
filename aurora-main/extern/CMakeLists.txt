@@ -86,7 +86,15 @@ else ()
     set(ABSL_MSVC_STATIC_RUNTIME ON CACHE INTERNAL "Link static runtime libraries")
   endif()
   set(ABSL_PROPAGATE_CXX_STD ON)
+  set(_aurora_abseil_patch_command "")
+  if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    # newlib has no tm_gmtoff, pthread_t is a pointer, and there is no <link.h>; see the patch
+    # (from DriftDroid, dorPXP/driftdroid; abseil itself is Apache-2.0).
+    set(_aurora_abseil_patch_command PATCH_COMMAND patch -p1 -N --no-backup-if-mismatch
+      -i "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/patches/abseil-nintendo-switch-platform.patch")
+  endif ()
   FetchContent_Declare(abseil-cpp
+    ${_aurora_abseil_patch_command}
     URL https://github.com/abseil/abseil-cpp/archive/refs/tags/20240722.0.tar.gz
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE
     EXCLUDE_FROM_ALL
@@ -282,7 +290,15 @@ if (AURORA_ENABLE_GX)
 
   if (NOT TARGET sqlite3)
     message(STATUS "aurora: Fetching sqlite3")
+    set(_aurora_sqlite3_patch_command "")
+    if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+      # No fchown, EIO on reads past EOF, "sdmc:/" device paths (from DriftDroid; sqlite3 is public
+      # domain).
+      set(_aurora_sqlite3_patch_command PATCH_COMMAND patch -p1 -N --no-backup-if-mismatch
+        -i "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/patches/sqlite3-nintendo-switch-platform.patch")
+    endif ()
     FetchContent_Declare(sqlite3
+      ${_aurora_sqlite3_patch_command}
       URL https://sqlite.org/2026/sqlite-amalgamation-3510300.zip
       URL_HASH SHA256=acb1e6f5d832484bf6d32b681e858c38add8b2acdfd42ac5df24b8afb46552b4
       DOWNLOAD_EXTRACT_TIMESTAMP FALSE
@@ -292,6 +308,12 @@ if (AURORA_ENABLE_GX)
 
     add_library(sqlite3 STATIC ${sqlite3_SOURCE_DIR}/sqlite3.c)
     target_include_directories(sqlite3 PUBLIC ${sqlite3_SOURCE_DIR})
+    if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+      # newlib has no mmap (so no WAL either), no dlfcn.h, and no POSIX advisory locks; only this
+      # process opens these caches, so the lock-free "unix-none" VFS is safe (from DriftDroid).
+      target_compile_definitions(sqlite3 PRIVATE SQLITE_MAX_MMAP_SIZE=0 SQLITE_OMIT_WAL
+        SQLITE_OMIT_LOAD_EXTENSION SQLITE_DEFAULT_UNIX_VFS="unix-none")
+    endif ()
   else ()
     message(STATUS "aurora: Using existing sqlite3")
   endif ()
@@ -345,8 +367,16 @@ if (NOT TARGET TracyClient)
   # Default to off, users can enable the cache variable if they want to use it.
   set(TRACY_ENABLE OFF CACHE BOOL "Enable Tracy profiling")
 
+  set(_aurora_tracy_patch_command "")
+  if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    # No libdl and no thread-id/login platform case in TracySystem.cpp (from DriftDroid; Tracy is
+    # BSD-3-Clause). Needed to compile even with TRACY_ENABLE=OFF.
+    set(_aurora_tracy_patch_command PATCH_COMMAND patch -p1 -N --no-backup-if-mismatch
+      -i "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/patches/tracy-nintendo-switch-platform.patch")
+  endif ()
   FetchContent_Declare(
           tracy
+          ${_aurora_tracy_patch_command}
           URL https://github.com/wolfpld/tracy/archive/a64b9a20294d59421a2f57aeca3c6383d8c48169.tar.gz
           URL_HASH SHA256=24d342b5127d7f659dc3cf94f24347b348cc736f25b17a691fd7f69541937658
           DOWNLOAD_EXTRACT_TIMESTAMP FALSE

@@ -37,7 +37,13 @@ endfunction()
 
 function(mkw_apply_translated_compile_options target)
     target_compile_options(${target} PRIVATE
-        -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS} -fno-slp-vectorize -w -pipe)
+        -O2 ${MKW_TRANSLATED_PPC_FP_OPTIONS} ${MKW_NO_SLP_VECTORIZE_FLAG} -w -pipe)
+    if(MKW_PLATFORM_SWITCH)
+        # GCC builds the shards -fPIC and then treats every non-static function as interposable,
+        # which blocks inlining across the corpus. The .nro is one static executable, so nothing is
+        # interposed (DriftDroid's Switch build does the same).
+        target_compile_options(${target} PRIVATE -fno-semantic-interposition)
+    endif()
 endfunction()
 
 function(mkw_configure_object_target target)
@@ -95,6 +101,12 @@ elseif(MKW_PLATFORM_ANDROID)
     target_include_directories(mkw_runtime_common PRIVATE
         "${MKW_RUNTIME_SOURCE_DIR}/third_party/libadrenotools/include")
 endif()
+
+# guest_flat_memory.cpp owns the one write to the Switch guest base (see guest_flat_memory.h); a
+# unity batch or the precompiled header would include the read-only declaration first.
+set_source_files_properties("${MKW_RUNTIME_SOURCE_DIR}/src/guest_flat_memory.cpp" PROPERTIES
+    SKIP_UNITY_BUILD_INCLUSION ON
+    SKIP_PRECOMPILE_HEADERS ON)
 
 if(MKW_PLATFORM_MACOS)
     # CoreAudio framework is required for automatic music muting on macOS.
@@ -258,6 +270,10 @@ function(mkw_configure_product target)
         target_link_options(${target} PRIVATE "LINKER:--wrap=dlopen" "LINKER:--wrap=dlclose")
         add_dependencies(${target} adrenotools main_hook hook_impl)
         set_target_properties(${target} PROPERTIES OUTPUT_NAME main)
+    elseif(MKW_PLATFORM_SWITCH)
+        # Switch.cmake links libnx (-lnx) and the homebrew specs already; the product is an .elf
+        # that nx_create_nro (below) packs into the .nro.
+        set_target_properties(${target} PROPERTIES SUFFIX ".elf")
     endif()
     if(MKW_PLATFORM_WINDOWS)
         foreach(runtime_dll libc++.dll libunwind.dll)
@@ -315,7 +331,7 @@ function(mkw_configure_product target)
     # a fixed hardware ROM, this bundle is expected to be refreshed periodically as CAs rotate.
     # Windows gets its trust store from Schannel, so only the platforms that actually build the
     # mbed TLS path need the bundle beside the executable.
-    if(NOT MKW_PLATFORM_WINDOWS)
+    if(NOT MKW_PLATFORM_WINDOWS AND NOT MKW_PLATFORM_SWITCH)
         set(MKW_CA_CERTIFICATE_BUNDLE "${MKW_RUNTIME_SOURCE_DIR}/assets/certs/cacert.pem")
         if(NOT EXISTS "${MKW_CA_CERTIFICATE_BUNDLE}")
             message(FATAL_ERROR "Missing TLS root CA bundle: ${MKW_CA_CERTIFICATE_BUNDLE}")
@@ -343,6 +359,18 @@ if(MKW_PLATFORM_WINDOWS)
 endif()
 if(TARGET mkw_base_sensitive)
     target_sources(WiiCompiled PRIVATE $<TARGET_OBJECTS:mkw_base_sensitive>)
+endif()
+if(MKW_PLATFORM_SWITCH)
+    # Homebrew package: WiiCompiled.elf -> nsmbw.nro with a title for the homebrew menu. The icon is
+    # libnx's default one; the game data is not part of the package (see src/platform/switch).
+    set(MKW_SWITCH_NRO_TITLE "NSMBW Recompiled" CACHE STRING "Title the homebrew menu shows")
+    set(MKW_SWITCH_NRO_AUTHOR "WiiCompiled port" CACHE STRING "Author the homebrew menu shows")
+    set(MKW_SWITCH_NRO_VERSION "0.1.0" CACHE STRING "Version the homebrew menu shows")
+    nx_generate_nacp(OUTPUT "${CMAKE_BINARY_DIR}/nsmbw.nacp"
+        NAME "${MKW_SWITCH_NRO_TITLE}" AUTHOR "${MKW_SWITCH_NRO_AUTHOR}"
+        VERSION "${MKW_SWITCH_NRO_VERSION}")
+    nx_create_nro(nsmbw_nro TARGET WiiCompiled OUTPUT "${CMAKE_BINARY_DIR}/nsmbw.nro"
+        NACP "${CMAKE_BINARY_DIR}/nsmbw.nacp")
 endif()
 
 if(MKW_HAVE_RETRO_REWIND)
@@ -379,6 +407,9 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64)$")
     else()
         set(MKW_BASELINE_ARCH_FLAG -march=x86-64-v3)
     endif()
+elseif(MKW_PLATFORM_SWITCH)
+    # Switch.cmake already sets -march=armv8-a+crc+crypto -mtune=cortex-a57 for the A57.
+    set(MKW_BASELINE_ARCH_FLAG "")
 elseif(MKW_PLATFORM_ANDROID)
     # Cross-compiled, so -mcpu=native would describe the build machine. NSMBW: ARMv8.0-A, so phones
     # older than the Cortex-A55/A75 run it too (the Snapdragon 835's Kryo 280 has no LSE atomics and

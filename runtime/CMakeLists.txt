@@ -10,7 +10,15 @@ if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
 endif()
 project(mkw_recompiled)
 
-if(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    # Switch homebrew through devkitPro's Switch.cmake toolchain file (devkitA64 + libnx). devkitPro
+    # ships no Clang for this target, so the Switch build is the one GCC exception to the Clang rule
+    # below. Ported from DriftDroid (dorPXP/driftdroid, GPL-3.0), runtime/CMakeLists.txt.
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR
+       NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|AARCH64)$")
+        message(FATAL_ERROR "WiiCompiled for Switch requires 64-bit GCC (devkitA64) targeting aarch64")
+    endif()
+elseif(NOT CMAKE_CXX_COMPILER_ID MATCHES "^(Clang|AppleClang)$" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "WiiCompiled requires a 64-bit Clang toolchain")
 endif()
 
@@ -41,10 +49,25 @@ elseif(ANDROID AND CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
     set(MKW_PLATFORM_ANDROID TRUE)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|amd64|x86_64|X86_64|aarch64|arm64|ARM64)$")
     set(MKW_PLATFORM_LINUX TRUE)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+    # The game is one static .elf, packed into an .nro (cmake/PublicProducts.cmake).
+    set(MKW_PLATFORM_SWITCH TRUE)
+    # libnx gives every pthread/std::thread a 128 KiB stack; Tint's WGSL resolver and mesa's GLSL
+    # compiler overflow that. __wrap___syscall_thread_create (src/platform/switch/switch_platform.cpp)
+    # raises the floor for every thread in the process, including ones created in Dawn and SDL.
+    add_link_options(-Wl,--wrap=__syscall_thread_create)
 else()
     message(FATAL_ERROR
         "WiiCompiled supports 64-bit LLVM-MinGW Clang on Windows, native Linux x86_64/aarch64, "
-        "Apple Clang on macOS x86_64/arm64, or the NDK for Android arm64-v8a")
+        "Apple Clang on macOS x86_64/arm64, the NDK for Android arm64-v8a, or devkitA64 for "
+        "Nintendo Switch")
+endif()
+
+# Clang and GCC spell "no SLP vectorizer" differently.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(MKW_NO_SLP_VECTORIZE_FLAG -fno-tree-slp-vectorize)
+else()
+    set(MKW_NO_SLP_VECTORIZE_FLAG -fno-slp-vectorize)
 endif()
 
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
@@ -180,6 +203,16 @@ if(NOT MKW_PLATFORM_WINDOWS)
         set(DISABLE_PACKAGE_CONFIG_AND_INSTALL ON CACHE BOOL "" FORCE)
         FetchContent_MakeAvailable(mkw_mbedtls_upstream)
         target_link_libraries(mkw_mbedtls INTERFACE MbedTLS::mbedtls MbedTLS::mbedx509 MbedTLS::mbedcrypto)
+        if(MKW_PLATFORM_SWITCH)
+            # mbed TLS knows only Unix and Windows. Entropy and the millisecond clock come from
+            # libnx instead (src/platform/switch/mbedtls_switch_config.h), and net_sockets.c is
+            # built as on Unix: libnx provides the BSD socket API it uses.
+            foreach(mkw_mbedtls_target mbedtls mbedx509 mbedcrypto)
+                target_compile_definitions(${mkw_mbedtls_target} PUBLIC
+                    "MBEDTLS_USER_CONFIG_FILE=\"${CMAKE_CURRENT_LIST_DIR}/src/platform/switch/mbedtls_switch_config.h\"")
+            endforeach()
+            target_compile_definitions(mbedtls PRIVATE __unix__=1)
+        endif()
     endif()
 endif()
 
@@ -217,7 +250,7 @@ set_source_files_properties(${MKW_PPC_SEMANTIC_RUNTIME_SOURCES} PROPERTIES
 set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/guest_profiler.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 # Match the optimization policy of the translated callers as well as their FP policy.
 set_property(SOURCE "${CMAKE_CURRENT_LIST_DIR}/src/ppc_quantized.cpp" APPEND PROPERTY
-    COMPILE_OPTIONS -O2 -fno-slp-vectorize)
+    COMPILE_OPTIONS -O2 ${MKW_NO_SLP_VECTORIZE_FLAG})
 
 # ----------------------------------------------------------------------
 # Third-party: aurora-main (provides SDL3 + GPU backends)
@@ -355,9 +388,10 @@ if(MKW_PLATFORM_MACOS)
     endif()
 else()
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory_macos.cpp")
-    if(MKW_PLATFORM_ANDROID)
+    if(MKW_PLATFORM_ANDROID OR MKW_PLATFORM_SWITCH)
         # Android shares HostContext's AArch64 assembly backend with Apple Silicon, in its ELF
-        # spelling (and without touching x18, the thread's shadow-call-stack register).
+        # spelling (and without touching x18, the thread's shadow-call-stack register). Switch uses
+        # the same ELF file: devkitA64 has no mmap/mprotect, which libco's stack setup needs.
         enable_language(ASM)
         list(APPEND SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/platform/android/co_switch.S")
     endif()
@@ -381,6 +415,8 @@ set_target_properties(mkw_platform PROPERTIES UNITY_BUILD OFF)
 
 # Keep these independent from Aurora's BUILD_TESTING option: they validate the
 # project's host-platform contracts, not Aurora's third-party test suite.
+# Switch builds are cross builds of one homebrew program: none of these host tests can run there.
+if(NOT MKW_PLATFORM_SWITCH)
 enable_testing()
 if(MKW_BUILD_PSQ_TESTS)
     add_executable(mkw_psq_helpers_tests
@@ -499,6 +535,7 @@ if(MKW_PLATFORM_MACOS)
     target_compile_features(mkw_macos_external_audio_tests PRIVATE cxx_std_17)
     add_test(NAME mkw_macos_external_audio_tests COMMAND mkw_macos_external_audio_tests)
 endif()
+endif() # NOT MKW_PLATFORM_SWITCH
 
 # The translator emits the complete, content-addressed source graph. Consuming
 # this one manifest keeps configure independent of the 28k generated function

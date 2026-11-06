@@ -146,10 +146,20 @@ elseif (_aurora_sdl3_provider STREQUAL "vendor")
     if (DEFINED FETCHCONTENT_SOURCE_DIR_SDL AND EXISTS "${FETCHCONTENT_SOURCE_DIR_SDL}")
       aurora_sdl3_apply_patches("${FETCHCONTENT_SOURCE_DIR_SDL}")
     endif ()
+    set(_aurora_sdl3_switch_patch_command "")
+    if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+      # SDL's release tarball has no Switch platform (threads/timers over newlib pthreads, an audio
+      # backend over audout); the patch comes from DriftDroid (dorPXP/driftdroid, GPL-3.0; the patch
+      # itself is SDL code, zlib). `patch` rather than `git apply`: git apply silently skips paths
+      # when the build tree sits inside another Git work tree.
+      set(_aurora_sdl3_switch_patch_command COMMAND patch -p1 -N --no-backup-if-mismatch
+        -i "${CMAKE_CURRENT_LIST_DIR}/patches/sdl3-nintendo-switch-platform.patch")
+    endif ()
     FetchContent_Declare(SDL
       URL "https://github.com/libsdl-org/SDL/releases/download/release-${AURORA_SDL3_VERSION}/SDL3-${AURORA_SDL3_VERSION}.tar.gz"
       DOWNLOAD_EXTRACT_TIMESTAMP FALSE
       PATCH_COMMAND "${CMAKE_COMMAND}" -DSDL_SOURCE_DIR=<SOURCE_DIR> -P "${_aurora_sdl3_patches}"
+      ${_aurora_sdl3_switch_patch_command}
       EXCLUDE_FROM_ALL
     )
     FetchContent_MakeAvailable(SDL)

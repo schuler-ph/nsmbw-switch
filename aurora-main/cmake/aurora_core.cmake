@@ -32,7 +32,17 @@ endif ()
 
 if (AURORA_ENABLE_GX)
     target_compile_definitions(aurora_core PUBLIC AURORA_ENABLE_GX WEBGPU_DAWN)
-    target_sources(aurora_core PRIVATE lib/webgpu/gpu.cpp lib/webgpu/gpu_cache.cpp lib/dawn/BackendBinding.cpp)
+    target_sources(aurora_core PRIVATE lib/webgpu/gpu.cpp lib/webgpu/gpu_cache.cpp)
+    if (CMAKE_SYSTEM_NAME STREQUAL "NintendoSwitch")
+        # BackendBinding.cpp sets up X11/Wayland/Win32/Cocoa surfaces; Switch gets its surface from
+        # the default NWindow instead (lib/switch, ported from DriftDroid).
+        target_sources(aurora_core PRIVATE lib/switch/surface_switch.cpp lib/switch/input_switch.cpp)
+        if (DAWN_ENABLE_OPENGLES)
+            target_sources(aurora_core PRIVATE lib/switch/gl_proc_table.c)
+        endif ()
+    else ()
+        target_sources(aurora_core PRIVATE lib/dawn/BackendBinding.cpp)
+    endif ()
     target_link_libraries(aurora_core PRIVATE dawn::webgpu_dawn)
     if (APPLE AND DAWN_ENABLE_METAL)
         find_library(AURORA_METALFX_FRAMEWORK MetalFX)
