@@ -1,0 +1,75 @@
+libuam (averne/libuam f8c9eef): free what one DekoCompiler allocates.
+
+Dawn's deko3d backend creates one DekoCompiler per shader stage. Each compilation leaked the
+linked shader with its whole GLSL IR (glsl_program_free freed only ->Program; the linker makes
+the gl_linked_shader its own ralloc root), the uniform-name map, the program parameter list and
+nv50_ir_generate_code's code/reloc/fixup/symbol buffers. Measured on x86 with LeakSanitizer and
+mallinfo: 16.7 KB per compile for a small test shader, nothing after this patch; the IR part grows
+with buffer/uniform accesses. On the Switch the first start after a cache loss compiles ~2 800
+stages and ran out of heap (run 15a, std::bad_alloc in the pipeline worker).
+
+Apply to the libuam checkout before building the Switch library:
+  git -C deps/uam apply wb/projects/nsmbw/tools/patches/uam-free-compiler-memory.patch
+
+diff --git a/source/compiler_iface.cpp b/source/compiler_iface.cpp
+index b503470..1ce3302 100644
+--- a/source/compiler_iface.cpp
++++ b/source/compiler_iface.cpp
+@@ -283,6 +283,12 @@ DekoCompiler::DekoCompiler(pipeline_stage stage, int optLevel) :
+ 
+ DekoCompiler::~DekoCompiler()
+ {
++	// nv50_ir_generate_code hands these to the caller (nouveau frees them with the program).
++	free(m_info.bin.code);
++	free(m_info.bin.relocData);
++	free(m_info.bin.fixupData);
++	free(m_info.bin.syms);
++
+ 	if (m_glsl)
+ 		glsl_program_free(m_glsl);
+ 
+diff --git a/source/glsl_frontend.cpp b/source/glsl_frontend.cpp
+index 5e940ca..9d9b12b 100644
+--- a/source/glsl_frontend.cpp
++++ b/source/glsl_frontend.cpp
+@@ -17,6 +17,7 @@
+ #include "main/mtypes.h"
+ #include "program/program.h"
+ #include "state_tracker/st_glsl_to_tgsi.h"
++#include "program/prog_parameter.h"
+ #include "tgsi/tgsi_from_mesa.h"
+ #include "glsl/ir_uniform.h"
+ #include "pipe/p_state.h"
+@@ -113,7 +114,15 @@ struct gl_program_with_tgsi : public gl_program
+ static void
+ destroy_gl_program_with_tgsi(void* p)
+ {
+-	gl_program_with_tgsi::from_ptr(p)->cleanup();
++	gl_program_with_tgsi* prog = gl_program_with_tgsi::from_ptr(p);
++	prog->cleanup();
++	// mesa frees the parameter list with the program (_mesa_delete_program); st_link_shader
++	// allocates it, and nothing else in uam releases it.
++	if (prog->Parameters)
++	{
++		_mesa_free_parameter_list(prog->Parameters);
++		prog->Parameters = NULL;
++	}
+ }
+ 
+ static void
+@@ -579,10 +588,14 @@ unsigned glsl_program_compute_get_shared_size(glsl_program prg)
+ void glsl_program_free(glsl_program prg)
+ {
+ 	for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+-		if (prg->_LinkedShaders[i])
++		if (prg->_LinkedShaders[i]) {
+ 			ralloc_free(prg->_LinkedShaders[i]->Program);
++			// The linked shader (with its whole IR) is its own ralloc root (linker.cpp: rzalloc(NULL, ...)).
++			ralloc_free(prg->_LinkedShaders[i]);
++		}
+ 	}
+ 
++	delete prg->UniformHash; // link_assign_uniform_locations: new string_to_uint_map
+ 	delete prg->AttributeBindings;
+ 	delete prg->FragDataBindings;
+ 	delete prg->FragDataIndexBindings;
