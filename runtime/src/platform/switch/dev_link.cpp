@@ -403,14 +403,21 @@ bool ReadHostFile() {
     if (file == nullptr) {
         return false;
     }
-    char text[128] = {};
-    const size_t length = std::fread(text, 1, sizeof(text) - 1, file);
-    std::fclose(file);
-    std::string value(text, length);
+    // Shared with the launcher (devenv stage 2): the first line that is neither empty, a # comment
+    // nor a key=value line holds "<ip>[:<port>]"; the port is this link's. key=value lines (the
+    // launcher's http=<port>) are skipped here.
+    std::string value;
+    char line[256];
     const auto isSpace = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-    while (!value.empty() && isSpace(value.back())) value.pop_back();
-    while (!value.empty() && isSpace(value.front())) value.erase(value.begin());
-    if (const size_t newline = value.find_first_of("\r\n"); newline != std::string::npos) value.resize(newline);
+    while (std::fgets(line, sizeof(line), file) != nullptr) {
+        std::string candidate(line);
+        while (!candidate.empty() && isSpace(candidate.back())) candidate.pop_back();
+        while (!candidate.empty() && isSpace(candidate.front())) candidate.erase(candidate.begin());
+        if (candidate.empty() || candidate[0] == '#' || candidate.find('=') != std::string::npos) continue;
+        value = candidate;
+        break;
+    }
+    std::fclose(file);
     std::string address = value;
     if (const size_t colon = value.find(':'); colon != std::string::npos) {
         address = value.substr(0, colon);

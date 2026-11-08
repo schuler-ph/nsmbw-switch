@@ -5,8 +5,9 @@
 // button presses). Implemented in src/platform/switch/dev_link.cpp; on every other platform the
 // DevLink calls are empty, so shared code (vi.cpp, switch_platform.cpp) calls them unconditionally.
 //
-// Switch: on only when sdmc:/switch/nsmbw/devhost.txt exists, holding "<PC address>[:<port>]"
-// (default port 28772). The PC side is scripts/switch/devlink.py in the nsmbwii2switch repository.
+// Switch: on only when sdmc:/switch/nsmbw/devhost.txt exists. Its first line that is not empty, a
+// # comment or key=value holds "<PC address>[:<port>]" (default port 28772); key=value lines belong
+// to the launcher (http=<port>, default 8780). The PC side is scripts/switch/devlink.py in the nsmbwii2switch repository.
 // Nothing the game does waits for the network: lines and frames go into a bounded queue that one
 // background thread sends; with no PC listening, it retries the connection every few seconds.
 //
