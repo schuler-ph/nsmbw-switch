@@ -15,6 +15,7 @@
 #include "runtime_log.h"
 #include "host_suspend.h"
 #include "guest_profiler.h"
+#include "dev_link.h"
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
@@ -1170,6 +1171,24 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
         const Clock::time_point now = Clock::now();
         if (s_lastEnd != Clock::time_point{}) {
             const double frame = ms(now - s_lastEnd);
+            {
+                // The development link (Switch) streams every frame, without the log's rate limit.
+                uint32_t sceneWord = 0;
+                Memory::TryRead32(0x80428730u, sceneWord);
+                DevLink::FrameSample sample;
+                sample.frame = s_presentedXfbFrames.load(std::memory_order_relaxed);
+                sample.scene = sceneWord & 0xFFFFu;
+                sample.frameMs = frame;
+                sample.gameMs = ms(presentStart - s_lastEnd);
+                sample.gxMs = gxMs;
+                sample.discMs = dvdMs;
+                sample.discReads = frameReads;
+                sample.presentMs = ms(endFrameStart - presentStart);
+                sample.endFrameMs = ms(paceStart - endFrameStart);
+                sample.paceMs = ms(now - paceStart);
+                sample.cpuMs = frameUser + frameKernel;
+                DevLink::OnFrame(sample);
+            }
             if (now - s_windowStart > std::chrono::minutes(1)) {
                 s_windowStart = now;
                 s_logged = 0;

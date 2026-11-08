@@ -7,11 +7,14 @@
 #include "platform/switch_platform.h"
 
 #include <atomic>
+#include "dev_link.h"
+
 #include <cerrno>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <deque>
 #include <mutex>
@@ -282,6 +285,8 @@ extern "C" void __libnx_exception_handler(ThreadExceptionDump* ctx) {
         fp = next;
     }
     SwitchCrashWrite("[switch-crash] end\n");
+    // The development link's thread still runs: give it the time to send the crash lines to the PC.
+    DevLink::FlushForCrash(1500);
     // hbloader unmaps this module's code while sibling threads still run, so returning (or a normal
     // exit) faults again inside the unmapped text. Leave immediately.
     svcExitProcess();
@@ -309,6 +314,7 @@ int g_logFile[3] = {-1, -1, -1};
 int g_nxlinkSocket = -1;
 
 ssize_t TeeWrite(int stream, const char* data, size_t length) {
+    DevLink::LogChunk(stream, data, length);
     if (g_logFile[stream] >= 0) {
         size_t written = 0;
         while (written < length) {
@@ -356,7 +362,7 @@ devoptab_t g_teeStderr{};
 void StartLogTee() noexcept {
     g_logFile[1] = open("sdmc:/switch/nsmbw/log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
     g_logFile[2] = open("sdmc:/switch/nsmbw/stderr.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
-    if (__nxlink_host.s_addr != 0 && R_SUCCEEDED(socketInitializeDefault())) {
+    if (__nxlink_host.s_addr != 0 && SwitchPlatform::EnsureSockets()) {
         g_nxlinkSocket = nxlinkConnectToHost(false, false);
     }
     g_teeStdout.name = "stdout";
@@ -370,6 +376,11 @@ void StartLogTee() noexcept {
 } // namespace
 
 namespace SwitchPlatform {
+
+bool EnsureSockets() noexcept {
+    static const bool up = R_SUCCEEDED(socketInitializeDefault());
+    return up;
+}
 
 bool InAppletMode() noexcept {
     const AppletType type = appletGetAppletType();
@@ -426,6 +437,27 @@ void EarlyInit() noexcept {
             std::fprintf(stderr, "[switch] AURORA_GFX_FLAGS=%s (launch argument)\n", arg + sizeof(kPrefix) - 1);
         }
     }
+    // Any other variable (NSMBW_LOG_FPS, NSMBW_WARP, NSMBW_INPUT_SCRIPT, ...): one NAME=value per
+    // line in sdmc:/switch/nsmbw/env.txt; lines starting with # are skipped.
+    if (FILE* env = std::fopen("sdmc:/switch/nsmbw/env.txt", "r")) {
+        char line[4096];
+        while (std::fgets(line, sizeof(line), env) != nullptr) {
+            size_t length = std::strlen(line);
+            while (length > 0 && (line[length - 1] == '\n' || line[length - 1] == '\r' || line[length - 1] == ' ')) {
+                line[--length] = 0;
+            }
+            char* eq = std::strchr(line, '=');
+            if (line[0] == '#' || eq == nullptr || eq == line) {
+                continue;
+            }
+            *eq = 0;
+            setenv(line, eq + 1, 1);
+            std::fprintf(stderr, "[switch] %s=%s (env.txt)\n", line, eq + 1);
+        }
+        std::fclose(env);
+    }
+    // Last, so that everything above reaches the PC from the link's queue (devhost.txt).
+    DevLink::Start();
 }
 
 void ShowConsoleMessage(const std::string& text) noexcept {

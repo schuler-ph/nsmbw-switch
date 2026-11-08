@@ -510,11 +510,12 @@ uint64_t g_commandDigest = 0;
 uint32_t g_digestTexObjId = 0;
 std::atomic<uint64_t> g_statProcessTotalNanos{0};  // never reset: slow-frame breakdowns take deltas
 thread_local int t_statDepth = 0;  // only the outermost of nested process()/raw draws counts
-// Timed on Windows always (the slow-frame log splits a frame into GX and the rest), elsewhere only
+// Timed on Windows and the Switch always (the slow-frame log splits a frame into GX and the rest), elsewhere only
 // while the runtime logs frame times (NSMBW_LOG_FPS): two clock reads per outermost call add up on a
 // phone. Read at first use: on Android the runtime sets the variable from a property after startup.
 static bool StatTiming() {
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__SWITCH__)
+  // Switch: the bring-up telemetry needs it, and the clock read is one register access there.
   return true;
 #else
   static const bool on = std::getenv("NSMBW_LOG_FPS") != nullptr;

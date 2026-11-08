@@ -38,6 +38,9 @@
 #include <ucontext.h>
 #include <unistd.h>
 #endif
+#if defined(__SWITCH__)
+#include <switch.h>
+#endif
 
 extern "C" {
 extern const uint32_t kGuestMapSymbolCount;
@@ -543,6 +546,15 @@ void ThreadCpuMs(double* user, double* kernel) {
         *user = ms(userTime);
         *kernel = ms(kernelTime);
     }
+#elif defined(__SWITCH__)
+    // Horizon counts a thread's time on all cores in system ticks (19.2 MHz) without a user/kernel
+    // split; it is reported as user time. InfoType 25 since 13.0.0, the older id before that.
+    u64 ticks = 0;
+    if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, CUR_THREAD_HANDLE, TickCountInfo_Total)) &&
+        R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCountDeprecated, CUR_THREAD_HANDLE, TickCountInfo_Total))) {
+        return;
+    }
+    *user = static_cast<double>(armTicksToNs(ticks)) / 1e6;
 #endif
 }
 

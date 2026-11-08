@@ -980,6 +980,16 @@ void set_background_input(bool value) { SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACK
 
 } // namespace aurora::window
 
+#if defined(__SWITCH__)
+// The runtime's development link ("quit", runtime/src/platform/switch/dev_link.cpp): end the
+// program the way closing it from the HOME menu does, through the next AURORA_EXIT event.
+extern "C" void AuroraSwitchRequestExit() {
+  if (!aurora::window::g_appletExitRequested.exchange(true, std::memory_order_acq_rel)) {
+    AuroraSwitchRestoreControllers();
+  }
+}
+#endif
+
 #if defined(SDL_PLATFORM_ANDROID)
 extern "C" JNIEXPORT void JNICALL Java_org_libsdl_app_SDLSurface_auroraNativeSetSurfaceReady(JNIEnv*, jclass,
                                                                                              jboolean ready) {

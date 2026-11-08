@@ -31,6 +31,9 @@ void EarlyInit() noexcept;
 // too little memory for the game; it must be started through a title override or a forwarder.
 bool InAppletMode() noexcept;
 
+// Initializes libnx's socket service once (nxlink stdio and the development link share it).
+bool EnsureSockets() noexcept;
+
 // Shows `text` on the libnx text console until the player presses + (or the system asks the
 // program to close). Only for use before aurora owns the screen.
 void ShowConsoleMessage(const std::string& text) noexcept;

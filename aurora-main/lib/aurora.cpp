@@ -73,6 +73,11 @@ Module Log("aurora");
 
 std::atomic<uint32_t> g_captureFrame{UINT32_MAX};
 std::string g_captureOutputPath;
+// aurora_request_frame_readback: frames still to read back and where they go.
+std::mutex g_readbackMutex;
+uint32_t g_readbackCount = 0;
+AuroraFrameReadbackCallback g_readbackCallback = nullptr;
+void* g_readbackUser = nullptr;
 
 using PresentClock = std::chrono::steady_clock;
 
@@ -520,20 +525,36 @@ struct PendingFrameCapture {
   uint64_t bufferSize = 0;
   bool bgra = false;
   std::string path;
+  // aurora_request_frame_readback: hand the pixels to this instead of writing `path`.
+  AuroraFrameReadbackCallback callback = nullptr;
+  void* user = nullptr;
 };
 
 std::optional<PendingFrameCapture> encode_frame_capture(const wgpu::CommandEncoder& encoder,
                                                         const webgpu::PresentSource& source) {
-  const uint32_t requestedFrame = g_captureFrame.load(std::memory_order_acquire);
+  AuroraFrameReadbackCallback callback = nullptr;
+  void* user = nullptr;
+  {
+    std::lock_guard lock(g_readbackMutex);
+    if (g_readbackCount > 0 && g_readbackCallback != nullptr) {
+      --g_readbackCount;
+      callback = g_readbackCallback;
+      user = g_readbackUser;
+    }
+  }
   const uint32_t currentFrame = gfx::current_frame();
-  if (requestedFrame == UINT32_MAX || currentFrame < requestedFrame) return std::nullopt;
-  g_captureFrame.store(UINT32_MAX, std::memory_order_release);
-  if (currentFrame != requestedFrame) {
-    Log.error("Missed requested frame capture {} (current frame {})", requestedFrame, currentFrame);
-    return std::nullopt;
+  if (callback == nullptr) {
+    const uint32_t requestedFrame = g_captureFrame.load(std::memory_order_acquire);
+    if (requestedFrame == UINT32_MAX || currentFrame < requestedFrame) return std::nullopt;
+    g_captureFrame.store(UINT32_MAX, std::memory_order_release);
+    if (currentFrame != requestedFrame) {
+      Log.error("Missed requested frame capture {} (current frame {})", requestedFrame, currentFrame);
+      return std::nullopt;
+    }
   }
   if (!source.texture || source.size.width == 0 || source.size.height == 0) {
     Log.error("Frame {} capture has no present-source texture", currentFrame);
+    if (callback != nullptr) callback(user, nullptr, 0, 0, 0, false, "no present-source texture");
     return std::nullopt;
   }
   const bool bgra = source.format == wgpu::TextureFormat::BGRA8Unorm ||
@@ -543,6 +564,11 @@ std::optional<PendingFrameCapture> encode_frame_capture(const wgpu::CommandEncod
   if (!bgra && !rgba) {
     Log.error("Frame {} capture does not support texture format {}", currentFrame,
               magic_enum::enum_name(source.format));
+    if (callback != nullptr) {
+      const std::string error =
+          "unsupported texture format " + std::string(magic_enum::enum_name(source.format));
+      callback(user, nullptr, 0, 0, 0, false, error.c_str());
+    }
     return std::nullopt;
   }
   const uint32_t bytesPerRow = align_to(source.size.width * 4, 256);
@@ -571,7 +597,9 @@ std::optional<PendingFrameCapture> encode_frame_capture(const wgpu::CommandEncod
       .bytesPerRow = bytesPerRow,
       .bufferSize = bufferSize,
       .bgra = bgra,
-      .path = g_captureOutputPath,
+      .path = callback != nullptr ? std::string() : g_captureOutputPath,
+      .callback = callback,
+      .user = user,
   };
 }
 
@@ -588,10 +616,16 @@ void complete_frame_capture(PendingFrameCapture& capture) {
   if (waitStatus != wgpu::WaitStatus::Success || mapStatus != wgpu::MapAsyncStatus::Success) {
     Log.error("Frame capture readback failed wait={} map={} message={}", magic_enum::enum_name(waitStatus),
               magic_enum::enum_name(mapStatus), mapMessage);
+    if (capture.callback != nullptr) {
+      capture.callback(capture.user, nullptr, 0, 0, 0, false, "readback buffer map failed");
+    }
     return;
   }
   const auto* pixels = static_cast<const uint8_t*>(capture.buffer.GetConstMappedRange(0, capture.bufferSize));
-  if (write_bmp(capture.path.c_str(), pixels, capture.width, capture.height, capture.bytesPerRow, capture.bgra)) {
+  if (capture.callback != nullptr) {
+    capture.callback(capture.user, pixels, capture.width, capture.height, capture.bytesPerRow, capture.bgra,
+                     pixels != nullptr ? nullptr : "mapped range unavailable");
+  } else if (write_bmp(capture.path.c_str(), pixels, capture.width, capture.height, capture.bytesPerRow, capture.bgra)) {
     Log.info("Captured rendered frame to '{}' ({}x{})", capture.path, capture.width, capture.height);
   } else {
     Log.error("Failed to write rendered frame capture to '{}'", capture.path);
@@ -2137,6 +2171,12 @@ uint32_t aurora_get_frame_interpolation_fps() {
 void aurora_request_frame_capture(uint32_t frame, const char* outputPath) {
   aurora::g_captureOutputPath = outputPath != nullptr ? outputPath : "frame_capture.bmp";
   aurora::g_captureFrame.store(frame, std::memory_order_release);
+}
+void aurora_request_frame_readback(uint32_t count, AuroraFrameReadbackCallback callback, void* user) {
+  std::lock_guard lock(aurora::g_readbackMutex);
+  aurora::g_readbackCount = callback != nullptr ? count : 0;
+  aurora::g_readbackCallback = callback;
+  aurora::g_readbackUser = user;
 }
 bool aurora_flush_efb_copies_to_ram() {
 #ifdef AURORA_ENABLE_GX

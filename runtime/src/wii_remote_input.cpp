@@ -6,6 +6,7 @@
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "virtual_remote.h"
+#include "dev_link.h"
 
 #include <dolphin/pad.h>
 #include <SDL3/SDL_gamepad.h>
@@ -15,6 +16,7 @@
 #include <SDL3/SDL_timer.h>
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -776,8 +778,22 @@ int16_t ClassicStickRaw(Sint16 axis, bool invert) {
     return static_cast<int16_t>(std::clamp(std::lround(value * 512.0f), -512L, 511L));
 }
 
-// Samples buttons, accelerometers and the extension of the remote on a port.
+namespace {
+bool ReadKpadSampleUninjected(uint32_t chan, KpadSample& sample);
+}
+
+// Samples buttons, accelerometers and the extension of the remote on a port, plus whatever the
+// development link injects (DevInput::Press) on top of a remote that is there.
 bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
+    if (!ReadKpadSampleUninjected(chan, sample)) {
+        return false;
+    }
+    sample.hold |= DevInput::HeldBits(chan);
+    return true;
+}
+
+namespace {
+bool ReadKpadSampleUninjected(uint32_t chan, KpadSample& sample) {
     if (chan >= PAD_MAX_CONTROLLERS) {
         return false;
     }
@@ -893,6 +909,7 @@ bool ReadKpadSample(uint32_t chan, KpadSample& sample) {
     }
     return true;
 }
+} // namespace
 
 // Corrected SDL sample and KPAD vector of the remote on a port, for the overlay.
 bool ReadAccelDebug(uint32_t chan, float sdlG[3], float kpadAcc[3]) {
@@ -948,3 +965,38 @@ const char* AccelCalibrationMessage() {
 }
 
 } // namespace WiiRemoteInput
+
+// DevLink's "press": buttons held on channel 1 until a deadline on SDL's millisecond clock.
+namespace {
+std::atomic<uint32_t> g_injectedBits{0};
+std::atomic<uint64_t> g_injectedUntilMs{0};
+} // namespace
+
+bool DevInput::Press(const char* buttons, uint32_t durationMs) {
+    const std::string names(buttons != nullptr ? buttons : "");
+    uint32_t bits = 0;
+    for (size_t b = 0; b <= names.size();) {
+        const size_t plus = names.find('+', b);
+        const uint32_t bit =
+            WiiRemoteInput::ScriptButtonBit(names.substr(b, plus == std::string::npos ? std::string::npos : plus - b));
+        if (bit == 0) {
+            return false;
+        }
+        bits |= bit;
+        if (plus == std::string::npos) break;
+        b = plus + 1;
+    }
+    g_injectedUntilMs.store(0, std::memory_order_release);
+    g_injectedBits.store(bits, std::memory_order_release);
+    g_injectedUntilMs.store(SDL_GetTicks() + durationMs, std::memory_order_release);
+    RT_LOGF(RT_TAG_RUNTIME, "injected input: %s for %u ms\n", names.c_str(), durationMs);
+    return true;
+}
+
+uint32_t DevInput::HeldBits(uint32_t chan) {
+    if (chan != 0) {
+        return 0;
+    }
+    const uint64_t until = g_injectedUntilMs.load(std::memory_order_acquire);
+    return until != 0 && SDL_GetTicks() < until ? g_injectedBits.load(std::memory_order_acquire) : 0;
+}
