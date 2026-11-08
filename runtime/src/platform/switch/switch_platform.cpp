@@ -25,6 +25,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <switch.h>
+#include <cstring>
+
+extern "C" {
+extern int __system_argc;
+extern char** __system_argv;
+}
 
 namespace {
 
@@ -308,6 +314,16 @@ void EarlyInit() noexcept {
         }
         setenv("AURORA_GFX_FLAGS", value, 1);
         std::fprintf(stderr, "[switch] AURORA_GFX_FLAGS=%s (gfx_flags.txt)\n", value);
+    }
+    // A launch argument wins over the file, so A/B runs need no SD card edit:
+    // nxlink ... nsmbw.nro --gfx-flags=dk_copybarrier
+    for (int i = 1; i < __system_argc; ++i) {
+        constexpr char kPrefix[] = "--gfx-flags=";
+        const char* arg = __system_argv[i];
+        if (arg != nullptr && std::strncmp(arg, kPrefix, sizeof(kPrefix) - 1) == 0) {
+            setenv("AURORA_GFX_FLAGS", arg + sizeof(kPrefix) - 1, 1);
+            std::fprintf(stderr, "[switch] AURORA_GFX_FLAGS=%s (launch argument)\n", arg + sizeof(kPrefix) - 1);
+        }
     }
 }
 
