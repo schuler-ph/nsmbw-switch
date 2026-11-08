@@ -6,8 +6,11 @@
 
 #include "platform/switch_platform.h"
 
-#include <atomic>
 #include "dev_link.h"
+
+#include <aurora/aurora.h>
+
+#include <atomic>
 
 #include <cerrno>
 #include <condition_variable>
@@ -196,6 +199,7 @@ extern "C" void SwitchConfigureAudioMixThread() {
 // mixed buffer to audout but must never miss its turn, or audout's queue runs dry (DriftDroid
 // measured that stutter). Highest helper priority.
 extern "C" void SwitchRaiseAudioOutputThread() {
+    aurora_register_perf_thread("audio_out");  // PerfMonitor's thread table
     const Result rc = svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2B);
     std::fprintf(stderr, "[switch] SDL audio output thread priority 0x2B (rc 0x%x, core %u)\n",
                  static_cast<unsigned>(rc), svcGetCurrentProcessorNumber());

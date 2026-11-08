@@ -31,10 +31,12 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 // Thread groups in a fixed order (overlay rows, CSV columns on the PC).
-constexpr std::array<const char*, 8> kGroups = {"game",     "gx_fifo",         "frame_worker", "presenter",
-                                                "pipeline", "pipeline_writer", "audio_mix",    "devlink"};
-constexpr std::array<const char*, 8> kGroupLabels = {"game", "gx fifo", "frame wrk", "presenter",
-                                                     "pipeline", "pipe write", "audio mix", "devlink"};
+constexpr std::array<const char*, 9> kGroups = {"game",            "gx_fifo",   "frame_worker",
+                                                "presenter",       "pipeline",  "pipeline_writer",
+                                                "audio_mix",       "audio_out", "devlink"};
+constexpr std::array<const char*, 9> kGroupLabels = {"game",       "gx fifo",   "frame wrk",
+                                                     "presenter",  "pipeline",  "pipe write",
+                                                     "audio mix",  "audio out", "devlink"};
 
 // Frame-time histogram for the 1 % low: 0.25 ms buckets up to 250 ms, the last one open.
 constexpr int kBuckets = 1000;

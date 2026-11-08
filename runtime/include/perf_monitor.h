@@ -8,7 +8,7 @@
 //     rate (retraces per second) and the audio rate (sample frames the game produced against the
 //     output rate),
 //   - per-thread CPU time (game, gx_fifo, frame_worker, presenter, pipeline, pipeline_writer,
-//     audio_mix, devlink), in % of one core and in ms per game frame,
+//     audio_mix, audio_out = SDL's output thread, devlink), in % of one core and in ms per frame,
 //   - on the Switch, CPU/GPU/EMC clocks (clkrst), SoC temperature (ts) and docked/handheld, where
 //     the services answer.
 // Shown as an ImGui overlay (NSMBW_PERF_OVERLAY=1, or "overlay on" over the development link),
