@@ -262,13 +262,13 @@ GXFifoObj* GXInit(void* base, u32 size) {
 }
 
 void GXDrawDone() {
-  aurora::gx::fifo::drain();
+  aurora::gx::fifo::draw_done();
   if (DrawDoneCB != nullptr)
     DrawDoneCB();
 }
 
 void GXSetDrawDone() {
-  aurora::gx::fifo::drain();
+  aurora::gx::fifo::draw_done();
   if (DrawDoneCB != nullptr)
     DrawDoneCB();
 }

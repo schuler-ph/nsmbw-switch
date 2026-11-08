@@ -231,6 +231,18 @@ void sync_if_threaded() {
   t.idle.wait(lock, [&t] { return t.jobs.empty() && !t.busy; });
 }
 
+void draw_done() {
+  static const bool async = [] {
+    const char* value = std::getenv("NSMBW_GX_DRAWDONE_ASYNC");
+    return value != nullptr && value[0] == '1';
+  }();
+  if (async && threaded()) {
+    hand_off();
+    return;
+  }
+  drain();
+}
+
 void drain() {
   if (threaded()) {
     sync_if_threaded();
