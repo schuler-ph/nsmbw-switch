@@ -1,0 +1,33 @@
+diff --git a/src/dawn/native/deko3d/ShaderModuleDeko3d.cpp b/src/dawn/native/deko3d/ShaderModuleDeko3d.cpp
+index 0ad2b24555..f7f93719ac 100644
+--- a/src/dawn/native/deko3d/ShaderModuleDeko3d.cpp
++++ b/src/dawn/native/deko3d/ShaderModuleDeko3d.cpp
+@@ -27,7 +27,9 @@
+ 
+ #include "src/dawn/native/deko3d/ShaderModuleDeko3d.h"
+ 
++#include <cstdlib>
+ #include <sstream>
++#include <string_view>
+ #include <utility>
+ 
+ #include "dawn/platform/DawnPlatform.h"
+@@ -308,7 +310,17 @@ ResultOrError<std::string> ShaderModule::CompileShader(const ProgrammableStage&
+         GetDevice()->IsToggleEnabled(Toggle::DisablePolyfillsOnIntegerDivisonAndModulo);
+     req.tintOptions.disable_integer_range_analysis =
+         !GetDevice()->IsToggleEnabled(Toggle::EnableIntegerRangeAnalysisInRobustness);
+-    req.tintOptions.use_uniform_buffers = true;
++    // Uniform buffers keep WGSL's layout only when Tint decomposes them into array<vec4u>: a
++    // GLSL uniform block is std140, which rounds every array element up to 16 bytes, while
++    // WGSL's uniform_buffer_standard_layout (used by aurora's GX uniforms, array<u32, 12>) packs
++    // them tightly. With std140 blocks every member behind such an array reads the wrong offset.
++    // AURORA_GFX_FLAGS=dk_uniformblocks restores the std140 blocks for A/B runs.
++    {
++        const char* env = std::getenv("AURORA_GFX_FLAGS");
++        const std::string_view flags = env != nullptr ? env : "";
++        req.tintOptions.use_uniform_buffers =
++            flags.find("dk_uniformblocks") != std::string_view::npos;
++    }
+ 
+     CacheResult<DkshCompilation> compilationResult;
+     DAWN_TRY_LOAD_OR_RUN(
