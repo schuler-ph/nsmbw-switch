@@ -405,7 +405,54 @@ void ScriptedPowerUp() {
 
 } // namespace
 
+// NSMBW_LOG_PLAYER=<n>: every n presented frames in a course, log P1's actor and the words that hold
+// its position, for designing input scripts without a screen.
+extern "C" uint32_t NsmbwPresentedFrames();  // vi.cpp
+void LogPlayer() {
+    static const int every = [] {
+        const char* value = std::getenv("NSMBW_LOG_PLAYER");
+        return value != nullptr ? std::atoi(value) : 0;
+    }();
+    if (every <= 0) {
+        return;
+    }
+    const uint32_t frame = NsmbwPresentedFrames();
+    static uint32_t s_last = UINT32_MAX;
+    if (frame == s_last || frame % static_cast<uint32_t>(every) != 0) {
+        return;
+    }
+    s_last = frame;
+    const uint16_t scene = GameMenus::CurrentScene();
+    if (scene != kSceneStage) {
+        return;
+    }
+    const uint32_t player = CallGame(kGetPlayer, 0, 0);
+    if (!InGuestRam(player)) {
+        RT_LOGF(RT_TAG_RUNTIME, "player: frame %u scene 0x%03X no P1 (0x%08X)\n", frame, scene, player);
+        return;
+    }
+    // dBaseActor_c: mPos at +0xAC (x right, y up, z layer), mLastPos at +0xB8, speed x at +0x110 (seen
+    // moving in the 2026-11-08 Linux runs; a death freezes x, hops y up and lets it fall away).
+    const float x = Memory::ReadFloat32(player + 0xAC), y = Memory::ReadFloat32(player + 0xB0),
+                z = Memory::ReadFloat32(player + 0xB4), vx = Memory::ReadFloat32(player + 0x110);
+    RT_LOGF(RT_TAG_RUNTIME, "player: frame %u x %.1f y %.1f z %.0f vx %.2f\n", frame, x, y, z, vx);
+    // NSMBW_LOG_PLAYER_DUMP=1: every word 0x60..0x17C of the actor as a float, one line per 16 words,
+    // to find the fields that move with the player.
+    static const bool dump = std::getenv("NSMBW_LOG_PLAYER_DUMP") != nullptr;
+    if (dump) {
+        for (uint32_t base = 0x60; base < 0x180; base += 0x40) {
+            char line[512];
+            int n = std::snprintf(line, sizeof(line), "player: dump +%03X:", base);
+            for (uint32_t off = 0; off < 0x40 && n > 0 && n < static_cast<int>(sizeof(line)) - 16; off += 4) {
+                n += std::snprintf(line + n, sizeof(line) - n, " %.1f", Memory::ReadFloat32(player + base + off));
+            }
+            RT_LOGF(RT_TAG_RUNTIME, "%s\n", line);
+        }
+    }
+}
+
 void OnGameThread() {
+    LogPlayer();
     ScriptedPowerUp();
     int powerUp = g_pendingPowerUp.load(std::memory_order_relaxed);
     if (powerUp < 0 || DetClock::Enabled()) {
