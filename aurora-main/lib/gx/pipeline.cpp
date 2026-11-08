@@ -69,8 +69,29 @@ wgpu::ShaderModule cached_shader_module(const ShaderConfig& config) {
 
 wgpu::RenderPipeline create_pipeline(const PipelineConfig& config) {
   ZoneScoped;
+#if defined(__SWITCH__)
+  auto pipeline = [&] {
+    const auto shader = cached_shader_module(config.shaderConfig);
+    return build_pipeline(config, {}, shader, "GX Pipeline");
+  }();
+  // Dawn keeps a shader module's parsed Tint program for as long as the application holds an
+  // external reference to the module (ShaderModuleBase::WillDropLastExternalRef frees it); a
+  // module parsed for a DKSH compile holds ~1.5 MiB. Kept in this cache for the whole run, every
+  // pipeline compiled on a cache miss grew the heap by that much (runs 17/18: 0.4 -> 2.7 GiB).
+  // The pipeline keeps the module alive inside Dawn, so drop the cache's reference once built; a
+  // later pipeline with the same shader re-creates it (Dawn deduplicates by content, ~7 ms).
+  {
+    std::lock_guard lock{sShaderModuleCacheMutex};
+    const auto it = sShaderModuleCache.find(config.shaderConfig);
+    if (it != sShaderModuleCache.end() && !it->second->compiling) {
+      sShaderModuleCache.erase(it);
+    }
+  }
+  return pipeline;
+#else
   const auto shader = cached_shader_module(config.shaderConfig);
   return build_pipeline(config, {}, shader, "GX Pipeline");
+#endif
 }
 
 void clear_shader_module_cache() {
