@@ -1,0 +1,52 @@
+Dawn (Switch build, on top of DriftDroid's dawn-nintendo-switch-platform.patch and its
+src/dawn/native/deko3d backend): keep Tint's buffer robustness but skip texture clamping.
+Texture clamping emits textureNumLevels, which the GLSL writer lowers through
+texture_builtins_from_uniform; the deko3d backend does not provide that uniform, so every
+pipeline whose shader uses textureLoad fails with "texture missing from
+texture_builtins_from_uniform list" (Switch runs 10/11, 2026-11-06).
+Apply in the Dawn source tree: git apply -p1 <this file>
+
+--- a/src/tint/lang/glsl/writer/common/options.h
++++ b/src/tint/lang/glsl/writer/common/options.h
+@@ -166,6 +166,11 @@
+     /// Set to `true` to enable integer range analysis in robustness transform.
+     bool disable_integer_range_analysis = false;
+ 
++    /// Set to `true` to keep buffer robustness but skip clamping of texture builtin arguments.
++    /// Texture clamping emits `textureNumLevels`, which the GLSL path serves from a uniform
++    /// buffer that a backend must fill (see texture_builtins_from_uniform); deko3d does not.
++    bool disable_texture_robustness = false;
++
+     /// Set to `true` to disable workgroup memory zero initialization
+     bool disable_workgroup_init = false;
+ 
+@@ -237,6 +242,7 @@
+                  strip_all_names,
+                  disable_robustness,
+                  disable_integer_range_analysis,
++                 disable_texture_robustness,
+                  disable_workgroup_init,
+                  disable_polyfill_integer_div_mod,
+                  use_array_length_from_uniform,
+--- a/src/tint/lang/glsl/writer/raise/raise.cc
++++ b/src/tint/lang/glsl/writer/raise/raise.cc
+@@ -83,6 +83,7 @@
+     if (!options.disable_robustness) {
+         core::ir::transform::RobustnessConfig config{};
+         config.use_integer_range_analysis = !options.disable_integer_range_analysis;
++        config.clamp_texture = !options.disable_texture_robustness;
+         TINT_CHECK_RESULT(core::ir::transform::Robustness(module, config));
+ 
+         TINT_CHECK_RESULT(core::ir::transform::PreventInfiniteLoops(module));
+--- a/src/dawn/native/deko3d/ShaderModuleDeko3d.cpp
++++ b/src/dawn/native/deko3d/ShaderModuleDeko3d.cpp
+@@ -297,6 +297,9 @@
+         .map = BuildSubstituteOverridesTransformConfig(programmableStage),
+     };
+     req.tintOptions.disable_robustness = !GetDevice()->IsRobustnessEnabled();
++    // No texture_builtins_from_uniform on deko3d: textureNumLevels from texture clamping
++    // cannot be lowered, so clamp buffers only.
++    req.tintOptions.disable_texture_robustness = true;
+     req.tintOptions.disable_workgroup_init =
+         GetDevice()->IsToggleEnabled(Toggle::DisableWorkgroupInit);
+     req.tintOptions.strip_all_names = !GetDevice()->IsToggleEnabled(Toggle::DisableSymbolRenaming);
