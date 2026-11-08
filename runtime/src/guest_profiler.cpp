@@ -39,7 +39,12 @@
 #include <unistd.h>
 #endif
 #if defined(__SWITCH__)
+#include <aurora/aurora.h>
+#include <sys/stat.h>
 #include <switch.h>
+#include <cstdarg>
+#include "dev_link.h"
+#include "platform/switch_platform.h"
 #endif
 
 extern "C" {
@@ -70,6 +75,8 @@ const char* GuestName(uint32_t address) {
 // The last present, for NSMBW_PROFILE_HITCH.
 std::atomic<int64_t> g_lastPresentNanos{0};
 std::atomic<uint32_t> g_presentedFrames{0};
+// The game's scene (vi.cpp): Linux samples carry it, Switch windows close on a change.
+std::atomic<unsigned> g_scene{0xFFFFu};
 
 int64_t NowNanos() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -301,7 +308,6 @@ Sample* g_samples = nullptr;
 size_t g_capacity = 0;
 std::atomic<size_t> g_count{0};
 std::atomic<bool> g_sampling{false};
-std::atomic<unsigned> g_scene{0xFFFFu};
 std::string g_stacksName = "profile-stacks.txt";
 
 // Reads a word of this process's memory without faulting on a bad frame pointer.
@@ -517,11 +523,381 @@ void RunLinux(pid_t thread, double startSeconds, double lengthSeconds) {
 
 } // namespace
 
+#if defined(__SWITCH__)
+// Switch: Horizon has no perf and the GDB stub is far too slow to sample at any useful rate, so
+// sample in-process, after DriftDroid (dorPXP/driftdroid, GPL-3.0, runtime/src/main.cpp). A thread
+// pauses the game thread (svcSetThreadActivity), reads its registers (svcGetThreadContext3: real
+// ARM64 PC, LR, FP, SP), walks the frame-pointer chain while it is paused, resumes it and
+// histograms (PC bucket, call chain) in an open-addressed table. Helper threads (the GX thread, the
+// frame worker, the presenter, the audio threads) are sampled the same way at a quarter of the rate:
+// what they do decides how long the game thread waits for them. Nothing here reads a symbol table:
+// offsets are module-relative and resolved offline against WiiCompiled.elf and MAP.txt
+// (scripts/switch/profile-report.py), which also tells waits (PC in a libnx wait SVC or a sync
+// wrapper) from work and names the function that waits.
+//
+// Every ~10 s (NSMBW_PROFILE_WINDOW_S), or sooner when the scene changes, the tables are written as
+// one text window - "P" record over the development link, or Logs/<run>/profile/wNNN.txt on the SD
+// card without one - and cleared, so one level yields a level-only profile. Off by default; with
+// NSMBW_PROFILE unset no thread is created and nothing is allocated.
+//
+// PCs and return addresses are kept exact, not bucketed: DriftDroid bucketed to 64 bytes to fit a
+// cumulative table, but libnx's SVC stubs lie 8-20 bytes apart, so a bucket mixed svcSleepThread
+// with svcCreateThread and a condition-variable wait with svcConnectToNamedPort (run 1 of the
+// sampler). A window holds at most as many distinct chains as it has samples (~12 500), well under
+// the 65 536 slots, and the table is cleared after every window.
+namespace {
+
+constexpr int kSwitchFrames = 6;  // LR, then up to five return addresses off the FP chain
+constexpr int kMaxProbes = 64;
+constexpr uint64_t kModuleSpanLimit = 512ull << 20;  // a PC further than this past the base is not ours
+
+struct StackSlot {
+    uint64_t pc;                   // module-relative; hits == 0 marks an empty slot
+    uint64_t frames[kSwitchFrames];
+    uint64_t hits;
+};
+static_assert(sizeof(StackSlot) == 64, "one cache line per slot");
+
+struct SampledThread {
+    const char* group;   // aurora_register_perf_thread group ("game" is the guest thread)
+    size_t slotCount;    // power of two
+    Handle handle = INVALID_HANDLE;
+    uint32_t handles = 0;   // threads registered under the group (only the first is sampled)
+    StackSlot* slots = nullptr;
+    uint64_t samples = 0, failures = 0, offModule = 0, dropped = 0;
+    uint64_t pausedTicks = 0;   // system ticks the thread spent paused for us this window
+    uint64_t cpuTicksStart = 0; // its CPU ticks at the window start
+    Result lastError = 0;
+};
+
+SampledThread g_switchThreads[] = {
+    {"game", 65536},  {"gx_fifo", 16384}, {"frame_worker", 16384},
+    {"presenter", 8192}, {"audio_mix", 8192}, {"audio_out", 4096},
+};
+constexpr size_t kSwitchThreadCount = sizeof(g_switchThreads) / sizeof(g_switchThreads[0]);
+
+std::atomic<Handle> g_switchGameThread{INVALID_HANDLE};
+std::atomic<uint32_t> g_switchFlushRequests{0};
+std::atomic<uint32_t> g_switchFlushesDone{0};
+std::atomic<bool> g_switchSamplerRunning{false};
+
+uint64_t ThreadCpuTicks(Handle handle) {
+    u64 ticks = 0;
+    if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, handle, TickCountInfo_Total)) &&
+        R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCountDeprecated, handle, TickCountInfo_Total))) {
+        return 0;
+    }
+    return ticks;
+}
+
+// Walks the paused thread's frame-pointer chain. Every read is bounds-checked against the one
+// mapping that holds the stack pointer (the thread stack, or the heap block of a guest fiber
+// stack), and frames must move strictly upward, so a garbage FP ends the walk instead of faulting.
+// frames[0] is LR: a leaf (or a prologue) has not stored it yet; where it has, the walk repeats it
+// and the report drops the repeat.
+void WalkPausedStack(const ThreadContext& ctx, uint64_t base, uint64_t (&frames)[kSwitchFrames]) {
+    const auto rel = [base](u64 addr) -> uint64_t {
+        return addr >= base && addr - base < kModuleSpanLimit ? addr - base : 0;
+    };
+    frames[0] = rel(ctx.lr);
+    for (int i = 1; i < kSwitchFrames; ++i) {
+        frames[i] = 0;
+    }
+    MemoryInfo info{};
+    u32 pageInfo = 0;
+    if (R_FAILED(svcQueryMemory(&info, &pageInfo, ctx.sp)) || (info.perm & Perm_R) == 0) {
+        return;
+    }
+    const u64 lo = info.addr;
+    const u64 hi = info.addr + info.size;
+    u64 fp = ctx.fp;
+    for (int i = 1; i < kSwitchFrames; ++i) {
+        if (fp < lo || fp + 16 > hi || (fp & 7) != 0) {
+            return;
+        }
+        const u64* record = reinterpret_cast<const u64*>(fp);
+        const u64 nextFp = record[0];
+        frames[i] = rel(record[1]);
+        if (nextFp <= fp) {
+            return;
+        }
+        fp = nextFp;
+    }
+}
+
+void RecordSample(SampledThread& t, uint64_t pc, const uint64_t (&frames)[kSwitchFrames]) {
+    uint64_t hash = (pc | 1) * 1099511628211ull;
+    for (uint64_t frame : frames) {
+        hash = (hash ^ frame) * 1099511628211ull;
+    }
+    size_t slot = static_cast<size_t>(hash >> 20) & (t.slotCount - 1);
+    for (int probe = 0; probe < kMaxProbes; ++probe) {
+        StackSlot& entry = t.slots[slot];
+        if (entry.hits == 0) {
+            entry.pc = pc;
+            std::memcpy(entry.frames, frames, sizeof(entry.frames));
+            entry.hits = 1;
+            return;
+        }
+        if (entry.pc == pc && std::memcmp(entry.frames, frames, sizeof(entry.frames)) == 0) {
+            ++entry.hits;
+            return;
+        }
+        slot = (slot + 1) & (t.slotCount - 1);
+    }
+    ++t.dropped;  // this chain is not counted at all, so the window header says so
+}
+
+// One sample: pause, read, walk, resume. Nothing in here may allocate or take a lock the paused
+// thread could hold (malloc, the log, the link) - the walk only reads memory the kernel says is
+// mapped. A few microseconds of stall per sample, which is why a profiled run presents a little
+// slower than a clean one; the header reports the paused time.
+void SampleThread(SampledThread& t, uint64_t base) {
+    if (t.handle == INVALID_HANDLE) {
+        return;
+    }
+    ++t.samples;
+    ThreadContext ctx{};
+    uint64_t frames[kSwitchFrames]{};
+    const u64 started = armGetSystemTick();
+    const Result pauseRc = svcSetThreadActivity(t.handle, ThreadActivity_Paused);
+    // svcGetThreadContext3 only dumps registers for a thread that is paused; on a running thread it
+    // fails outright.
+    const Result ctxRc = R_SUCCEEDED(pauseRc) ? svcGetThreadContext3(&ctx, t.handle) : pauseRc;
+    if (R_SUCCEEDED(ctxRc)) {
+        WalkPausedStack(ctx, base, frames);  // the stack is only stable while the thread is paused
+    }
+    if (R_SUCCEEDED(pauseRc)) {
+        svcSetThreadActivity(t.handle, ThreadActivity_Runnable);
+    }
+    t.pausedTicks += armGetSystemTick() - started;
+    if (R_FAILED(ctxRc)) {
+        ++t.failures;
+        t.lastError = ctxRc;
+        return;
+    }
+    const u64 pc = ctx.pc.x;
+    if (pc < base || pc - base >= kModuleSpanLimit) {
+        ++t.offModule;
+        return;
+    }
+    RecordSample(t, pc - base, frames);
+}
+
+void RefreshHelperHandles() {
+    for (size_t i = 1; i < kSwitchThreadCount; ++i) {
+        SampledThread& t = g_switchThreads[i];
+        uint32_t handles[4] = {INVALID_HANDLE, INVALID_HANDLE, INVALID_HANDLE, INVALID_HANDLE};
+        t.handles = static_cast<uint32_t>(aurora_perf_thread_handles(t.group, handles, 4));
+        t.handle = t.handles > 0 ? handles[0] : INVALID_HANDLE;
+    }
+}
+
+void AppendLine(std::string& out, const char* format, ...) __attribute__((format(printf, 2, 3)));
+void AppendLine(std::string& out, const char* format, ...) {
+    char line[512];
+    va_list args;
+    va_start(args, format);
+    const int length = std::vsnprintf(line, sizeof(line), format, args);
+    va_end(args);
+    if (length > 0) {
+        out.append(line, std::min<size_t>(static_cast<size_t>(length), sizeof(line) - 1));
+    }
+}
+
+struct WindowState {
+    uint32_t number = 0;
+    std::chrono::steady_clock::time_point start{};
+    uint32_t framesAtStart = 0;
+    unsigned sceneAtStart = 0xFFFFu;
+    uint64_t profilerCpuStart = 0;
+};
+
+void BeginWindow(WindowState& w) {
+    w.start = std::chrono::steady_clock::now();
+    w.framesAtStart = g_presentedFrames.load(std::memory_order_relaxed);
+    w.sceneAtStart = g_scene.load(std::memory_order_relaxed);
+    w.profilerCpuStart = ThreadCpuTicks(CUR_THREAD_HANDLE);
+    g_switchThreads[0].handle = g_switchGameThread.load(std::memory_order_acquire);
+    RefreshHelperHandles();
+    for (SampledThread& t : g_switchThreads) {
+        t.cpuTicksStart = t.handle != INVALID_HANDLE ? ThreadCpuTicks(t.handle) : 0;
+    }
+}
+
+// Writes the window: a header, one "# thread" line per sampled thread, then "S <thread> <hits>
+// <pc> <frame>..." lines (module-relative hex, exact, most hits first, trailing empty frames left
+// off).
+// Runs with every thread resumed, so it may allocate and use the link.
+void EndWindow(WindowState& w, const char* reason) {
+    const auto now = std::chrono::steady_clock::now();
+    const double seconds = std::chrono::duration<double>(now - w.start).count();
+    const uint32_t frames = g_presentedFrames.load(std::memory_order_relaxed) - w.framesAtStart;
+    const uint64_t base = SwitchPlatform::ModuleBase();
+    const double profilerCpuMs =
+        static_cast<double>(armTicksToNs(ThreadCpuTicks(CUR_THREAD_HANDLE) - w.profilerCpuStart)) / 1e6;
+
+    std::string out;
+    out.reserve(256u * 1024u);
+    AppendLine(out,
+               "# nsmbw-profile 1 window=%u reason=%s seconds=%.2f frames=%u fps=%.2f scene=0x%X scene_start=0x%X "
+               "module_base=0x%llx t_ms=%llu profiler_cpu_ms=%.1f\n",
+               w.number, reason, seconds, frames, seconds > 0 ? frames / seconds : 0.0,
+               g_scene.load(std::memory_order_relaxed), w.sceneAtStart, static_cast<unsigned long long>(base),
+               static_cast<unsigned long long>(armTicksToNs(armGetSystemTick()) / 1000000ull), profilerCpuMs);
+    std::vector<const StackSlot*> ranked;
+    ranked.reserve(4096);
+    for (SampledThread& t : g_switchThreads) {
+        if (t.samples == 0 && t.handle == INVALID_HANDLE) {
+            continue;
+        }
+        const double cpuMs = t.handle != INVALID_HANDLE
+                                 ? static_cast<double>(armTicksToNs(ThreadCpuTicks(t.handle) - t.cpuTicksStart)) / 1e6
+                                 : 0.0;
+        AppendLine(out,
+                   "# thread %s samples=%llu failures=%llu last_rc=0x%x off_module=%llu dropped=%llu handles=%u "
+                   "cpu_ms=%.1f paused_ms=%.2f\n",
+                   t.group, static_cast<unsigned long long>(t.samples), static_cast<unsigned long long>(t.failures),
+                   static_cast<unsigned>(t.lastError), static_cast<unsigned long long>(t.offModule),
+                   static_cast<unsigned long long>(t.dropped), t.handles, cpuMs,
+                   static_cast<double>(armTicksToNs(t.pausedTicks)) / 1e6);
+        ranked.clear();
+        for (size_t i = 0; i < t.slotCount; ++i) {
+            if (t.slots[i].hits != 0) {
+                ranked.push_back(&t.slots[i]);
+            }
+        }
+        std::sort(ranked.begin(), ranked.end(),
+                  [](const StackSlot* a, const StackSlot* b) { return a->hits > b->hits; });
+        for (const StackSlot* entry : ranked) {
+            int depth = kSwitchFrames;
+            while (depth > 0 && entry->frames[depth - 1] == 0) {
+                --depth;
+            }
+            AppendLine(out, "S %s %llu 0x%llx", t.group, static_cast<unsigned long long>(entry->hits),
+                       static_cast<unsigned long long>(entry->pc));
+            for (int i = 0; i < depth; ++i) {
+                AppendLine(out, " 0x%llx", static_cast<unsigned long long>(entry->frames[i]));
+            }
+            out.push_back('\n');
+        }
+        std::memset(t.slots, 0, t.slotCount * sizeof(StackSlot));
+        t.samples = t.failures = t.offModule = t.dropped = t.pausedTicks = 0;
+        t.lastError = 0;
+    }
+
+    RT_LOGF(RT_TAG_RUNTIME, "profile: window %u (%s): %.1f s, %u frames, %zu bytes; %s\n", w.number, reason, seconds,
+            frames, out.size(), DevLink::Active() ? "sent over the dev link" : "written to Logs/<run>/profile/");
+    if (DevLink::Active()) {
+        DevLink::PushProfileWindow(w.number, out);
+    } else {
+        const std::string directory = (::RuntimeRunLogDirectory() / "profile").string();
+        mkdir(directory.c_str(), 0777);
+        char name[32];
+        std::snprintf(name, sizeof(name), "/w%03u.txt", w.number);
+        if (FILE* file = std::fopen((directory + name).c_str(), "w")) {
+            std::fwrite(out.data(), 1, out.size(), file);
+            std::fclose(file);
+        }
+    }
+    ++w.number;
+}
+
+// The sampler thread: a tick a millisecond; the game thread every tick, one helper every fourth.
+void SwitchSamplerMain(double startSeconds, double windowSeconds) {
+    aurora_register_perf_thread("profiler");
+    // Above the time-sliced helpers (0x3B) so the ticks stay regular, below the audio threads.
+    svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2E);
+    if (startSeconds > 0) {
+        std::this_thread::sleep_for(std::chrono::duration<double>(startSeconds));
+    }
+    for (SampledThread& t : g_switchThreads) {
+        t.slots = new StackSlot[t.slotCount]();
+    }
+    const uint64_t base = SwitchPlatform::ModuleBase();
+    WindowState window;
+    BeginWindow(window);
+    uint32_t tick = 0;
+    uint32_t flushesSeen = 0;
+    for (;;) {
+        svcSleepThread(1000000);  // 1 ms
+        SampleThread(g_switchThreads[0], base);
+        if ((tick & 3) == 0) {
+            const size_t helper = 1 + ((tick >> 2) % (kSwitchThreadCount - 1));
+            SampleThread(g_switchThreads[helper], base);
+        }
+        ++tick;
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - window.start).count();
+        const uint32_t flushes = g_switchFlushRequests.load(std::memory_order_acquire);
+        const bool sceneChanged = g_scene.load(std::memory_order_relaxed) != window.sceneAtStart;
+        const char* reason = nullptr;
+        if (flushes != flushesSeen) {
+            reason = "flush";
+        } else if (elapsed >= windowSeconds) {
+            reason = "timer";
+        } else if (sceneChanged && elapsed >= 2.0) {
+            reason = "scene";
+        }
+        if (reason != nullptr) {
+            EndWindow(window, reason);
+            if (flushes != flushesSeen) {
+                flushesSeen = flushes;
+                g_switchFlushesDone.store(flushes, std::memory_order_release);
+            }
+            BeginWindow(window);
+        }
+    }
+}
+
+void StartSwitchSampler(const char* value) {
+    double start = 0, window = 0;
+    if (std::sscanf(value, "%lf:%lf", &start, &window) != 2) {
+        start = 0;
+        window = 0;
+        if (std::strcmp(value, "1") != 0 && std::strcmp(value, "on") != 0) {
+            RT_LOGF(RT_TAG_RUNTIME, "profile: NSMBW_PROFILE=%s not understood (1, or <start s>:<window s>)\n", value);
+            return;
+        }
+    }
+    if (const char* text = std::getenv("NSMBW_PROFILE_WINDOW_S"); text != nullptr && std::atof(text) > 0) {
+        window = std::atof(text);
+    }
+    if (window <= 0) {
+        window = 10.0;
+    }
+    // This runs on the thread that presents frames - the guest thread. Its handle is the one the
+    // sampler pauses; libnx's per-thread handle is a real kernel handle usable from any thread.
+    g_switchGameThread.store(threadGetCurHandle(), std::memory_order_release);
+    RT_LOGF(RT_TAG_RUNTIME,
+            "profile: sampling the game thread at ~1 kHz (helpers at 250 Hz) from %.0f s in %.0f s windows; module "
+            "base 0x%llx; %s\n",
+            start, window, static_cast<unsigned long long>(SwitchPlatform::ModuleBase()),
+            DevLink::Active() ? "windows go to the dev link (P records)" : "windows go to Logs/<run>/profile/");
+    g_switchSamplerRunning.store(true, std::memory_order_release);
+    // Leaked, not detached: pthread_detach is ENOSYS on devkitA64 (see switch_platform.cpp).
+    new std::thread(SwitchSamplerMain, start, window);
+}
+
+} // namespace
+#endif // __SWITCH__
+
 void NoteScene(unsigned scene) {
-#if defined(__linux__)
     g_scene.store(scene, std::memory_order_relaxed);
+}
+
+void FlushWindow(const char* reason) {
+#if defined(__SWITCH__)
+    (void)reason;
+    if (!g_switchSamplerRunning.load(std::memory_order_acquire)) {
+        return;
+    }
+    const uint32_t request = g_switchFlushRequests.fetch_add(1, std::memory_order_acq_rel) + 1;
+    // The sampler closes the window within a tick or two; give it two seconds, never more.
+    for (int waited = 0; waited < 200 && g_switchFlushesDone.load(std::memory_order_acquire) < request; ++waited) {
+        svcSleepThread(10000000);
+    }
 #else
-    (void)scene;
+    (void)reason;
 #endif
 }
 
@@ -559,7 +935,6 @@ void ThreadCpuMs(double* user, double* kernel) {
 }
 
 void OnFramePresented() {
-#if defined(_WIN32) || defined(__linux__)
     g_lastPresentNanos.store(NowNanos(), std::memory_order_relaxed);
     g_presentedFrames.fetch_add(1, std::memory_order_relaxed);
     static bool started = false;
@@ -568,8 +943,14 @@ void OnFramePresented() {
     }
     started = true;
     const char* value = std::getenv("NSMBW_PROFILE");
+    if (value == nullptr || *value == '\0') {
+        return;
+    }
+#if defined(__SWITCH__)
+    StartSwitchSampler(value);
+#elif defined(_WIN32) || defined(__linux__)
     double start = 0, length = 0;
-    if (value == nullptr || std::sscanf(value, "%lf:%lf", &start, &length) != 2 || length <= 0) {
+    if (std::sscanf(value, "%lf:%lf", &start, &length) != 2 || length <= 0) {
         return;
     }
 #ifdef _WIN32

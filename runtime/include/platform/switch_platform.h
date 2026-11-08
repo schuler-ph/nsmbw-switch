@@ -15,6 +15,7 @@
 //   sdmc:/switch/nsmbw/stderr.txt  stderr of the last run, including [switch-crash] lines
 #if defined(__SWITCH__)
 
+#include <cstdint>
 #include <string>
 
 namespace SwitchPlatform {
@@ -48,6 +49,10 @@ void ShowErrorDialog(const std::string& shortText, const std::string& longText) 
 // Ends the process at once, without atexit handlers or static destructors (other threads such as
 // the shader compiler may still be running). stdout/stderr are unbuffered, so the logs are complete.
 [[noreturn]] void TerminateNow(int code) noexcept;
+
+// Where this module's code is mapped (randomised per launch): a host address minus this base is
+// the offset `aarch64-none-elf-addr2line -e WiiCompiled.elf` resolves. 0 if the kernel would not say.
+uint64_t ModuleBase() noexcept;
 
 } // namespace SwitchPlatform
 

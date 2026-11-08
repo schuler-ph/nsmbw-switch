@@ -387,6 +387,10 @@ bool EnsureSockets() noexcept {
     return up;
 }
 
+uint64_t ModuleBase() noexcept {
+    return SwitchModuleBase();
+}
+
 bool InAppletMode() noexcept {
     const AppletType type = appletGetAppletType();
     return type != AppletType_Application && type != AppletType_SystemApplication;

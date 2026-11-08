@@ -3,6 +3,7 @@
 
 #include "dev_link.h"
 
+#include "guest_profiler.h"
 #include "perf_monitor.h"
 #include "platform/switch_platform.h"
 #include "runtime_log.h"
@@ -292,6 +293,9 @@ void HandleCommand(const std::string& line) {
     } else if (verb == "summary") {
         PerfMonitor::LogRunSummary("requested from the PC");
         Answer("summary");
+    } else if (verb == "profile") {
+        GuestProfiler::FlushWindow("requested from the PC");
+        Answer("profile");
     } else if (!verb.empty()) {
         Answer("error unknown command '" + verb + "'");
     }
@@ -500,6 +504,20 @@ void PushSummary(const std::string& json) noexcept {
         return;
     }
     Push("S " + json + "\n");
+}
+
+void PushProfileWindow(uint32_t window, const std::string& text) noexcept {
+    if (g_state.load(std::memory_order_acquire) != State::On || text.size() >= kQueueLimitBytes / 2) {
+        return;
+    }
+    // One record: the header line, then the text (the PC reads exactly `bytes` after the newline).
+    std::string record = "P " + std::to_string(window) + " " + std::to_string(text.size()) + "\n";
+    record += text;
+    Push(std::move(record));
+}
+
+bool Active() noexcept {
+    return g_state.load(std::memory_order_acquire) == State::On;
 }
 
 void RequestQuit() noexcept {

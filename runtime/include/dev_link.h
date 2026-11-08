@@ -18,9 +18,11 @@
 //   S <json>                one-second summary from PerfMonitor (queued even while disconnected)
 //   A <text>                answer to a command
 //   I <id> <w> <h> <bytes>  followed by <bytes> of tightly packed RGBA8, row 0 at the top
+//   P <window> <bytes>      followed by <bytes> of text: one sampling-profiler window
+//                           (guest_profiler.cpp, NSMBW_PROFILE=1)
 // PC -> Switch, one command per line: ping, status, screenshot [count], quit, overlay [on|off],
 //   summary, press <BUTTONS> [ms] (Wii Remote names joined by '+', as in NSMBW_INPUT_SCRIPT),
-//   mark <text>.
+//   mark <text>, profile (closes the profiler's current window now).
 
 #include <cstddef>
 #include <cstdint>
@@ -57,6 +59,10 @@ void OnFrame(const FrameSample& sample) noexcept;
 void FlushForCrash(uint32_t timeoutMs) noexcept;
 // One "S" record (PerfMonitor's one-second summary, a JSON object).
 void PushSummary(const std::string& json) noexcept;
+// One "P" record: a sampling-profiler window (`text`, any size well below the queue limit).
+void PushProfileWindow(uint32_t window, const std::string& text) noexcept;
+// True once Start() found devhost.txt: records go to the PC (or wait in the queue for it).
+bool Active() noexcept;
 // Ends the program like HOME -> Close once the queue is sent (at once without a link).
 void RequestQuit() noexcept;
 #else
@@ -65,6 +71,8 @@ inline void LogChunk(int, const char*, size_t) noexcept {}
 inline void OnFrame(const FrameSample&) noexcept {}
 inline void FlushForCrash(uint32_t) noexcept {}
 inline void PushSummary(const std::string&) noexcept {}
+inline void PushProfileWindow(uint32_t, const std::string&) noexcept {}
+inline bool Active() noexcept { return false; }
 inline void RequestQuit() noexcept {}
 #endif
 

@@ -194,6 +194,9 @@ typedef struct {
 } AuroraPerfThreadCpu;
 void aurora_register_perf_thread(const char* group);
 size_t aurora_perf_thread_cpu(AuroraPerfThreadCpu* out, size_t max);
+// Switch: the kernel handles of the threads registered under `group` (the sampling profiler pauses
+// and reads them); returns how many there are, at most `max` of them stored. 0 elsewhere.
+size_t aurora_perf_thread_handles(const char* group, uint32_t* out, size_t max);
 bool aurora_flush_efb_copies_to_ram();
 bool aurora_flush_efb_copy_to_ram(void* dest);
 
