@@ -1,5 +1,7 @@
 #include "pipeline_cache.hpp"
 
+#include <aurora/aurora.h>
+
 #include "clear.hpp"
 #include "../gx/pipeline.hpp"
 #include "../fs_helper.hpp"
@@ -925,6 +927,7 @@ static bool write_pipeline_cache_record(const PipelineCacheWrite& write) {
 }
 
 static void pipeline_cache_writer() {
+  aurora_register_perf_thread("pipeline_writer");
 #ifdef TRACY_ENABLE
   tracy::SetThreadName("Pipeline cache writer thread");
 #endif
@@ -1075,6 +1078,7 @@ static void compile_pending_pipeline(PendingPipeline pending) {
 }
 
 static void pipeline_worker() {
+  aurora_register_perf_thread("pipeline");
 #ifdef TRACY_ENABLE
   tracy::SetThreadName("Pipeline compilation thread");
 #endif

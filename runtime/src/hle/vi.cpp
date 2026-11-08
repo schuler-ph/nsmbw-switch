@@ -16,6 +16,7 @@
 #include "host_suspend.h"
 #include "guest_profiler.h"
 #include "dev_link.h"
+#include "perf_monitor.h"
 
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
@@ -1187,7 +1188,13 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
                 sample.endFrameMs = ms(paceStart - endFrameStart);
                 sample.paceMs = ms(now - paceStart);
                 sample.cpuMs = frameUser + frameKernel;
-                DevLink::OnFrame(sample);
+                {
+                    std::lock_guard<std::mutex> lock(g_viMutex);
+                    sample.retraceCount = g_vi.retraceCount;
+                    sample.viIntervalNs = static_cast<uint64_t>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(g_vi.retraceInterval).count());
+                }
+                PerfMonitor::OnFrame(sample);
             }
             if (now - s_windowStart > std::chrono::minutes(1)) {
                 s_windowStart = now;

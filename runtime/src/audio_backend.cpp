@@ -1,4 +1,5 @@
 #include "audio_backend.h"
+#include "perf_monitor.h"
 
 #include "runtime_log.h"
 
@@ -204,8 +205,10 @@ bool AudioBackend::PushWiiAiSamplesBE16(const uint8_t* data, size_t bytes) {
 
     const int lenBytes = static_cast<int>(frameCount * 2 * sizeof(int16_t));
     if (!QueueHasCapacityLocked(lenBytes)) {
+        PerfMonitor::NoteAudio(static_cast<uint32_t>(frameCount), m_sampleRate, false);
         return true;
     }
+    PerfMonitor::NoteAudio(static_cast<uint32_t>(frameCount), m_sampleRate, true);
     if (!SDL_PutAudioStreamData(m_stream, m_convertBuffer.data(), lenBytes)) {
         RT_LOG(RT_TAG_AUDIO) << "SDL_PutAudioStreamData failed: " << SDL_GetError() << std::endl;
         return false;
@@ -225,9 +228,12 @@ bool AudioBackend::PushSamplesLE16(const int16_t* samples, size_t sampleCount) {
     }
 
     const int lenBytes = static_cast<int>(sampleCount * sizeof(int16_t));
+    const uint32_t frames = m_channels > 0 ? static_cast<uint32_t>(sampleCount / m_channels) : 0u;
     if (!QueueHasCapacityLocked(lenBytes)) {
+        PerfMonitor::NoteAudio(frames, m_sampleRate, false);
         return true;
     }
+    PerfMonitor::NoteAudio(frames, m_sampleRate, true);
     if (!SDL_PutAudioStreamData(m_stream, samples, lenBytes)) {
         RT_LOG(RT_TAG_AUDIO) << "SDL_PutAudioStreamData failed: " << SDL_GetError() << std::endl;
         return false;

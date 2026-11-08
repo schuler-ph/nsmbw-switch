@@ -182,6 +182,18 @@ void aurora_request_frame_capture(uint32_t frame, const char* outputPath);
 typedef void (*AuroraFrameReadbackCallback)(void* user, const uint8_t* pixels, uint32_t width, uint32_t height,
                                             uint32_t bytesPerRow, bool bgra, const char* error);
 void aurora_request_frame_readback(uint32_t count, AuroraFrameReadbackCallback callback, void* user);
+
+// Per-thread CPU accounting for the performance monitor (Switch; elsewhere it records nothing).
+// A thread calls aurora_register_perf_thread once with a group name that must stay valid for the
+// process ("game", "presenter", "pipeline", ...); aurora_perf_thread_cpu fills `out` with the CPU
+// time each group's threads have used so far (all cores, ns) and returns the number of groups.
+typedef struct {
+  const char* group;
+  uint64_t cpuNanos;
+  uint32_t threads;
+} AuroraPerfThreadCpu;
+void aurora_register_perf_thread(const char* group);
+size_t aurora_perf_thread_cpu(AuroraPerfThreadCpu* out, size_t max);
 bool aurora_flush_efb_copies_to_ram();
 bool aurora_flush_efb_copy_to_ram(void* dest);
 

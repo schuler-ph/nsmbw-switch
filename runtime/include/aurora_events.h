@@ -1,5 +1,8 @@
 #pragma once
 
+#if defined(__SWITCH__)
+#include "platform/switch_platform.h"
+#endif
 #include "settings_overlay.h"
 #include "runtime_config.h"
 #include "display_settings.h"
@@ -63,6 +66,9 @@ inline void Flush(bool force = false) {
 [[noreturn]] inline void ExitForAuroraWindowClose() noexcept {
     settings_overlay::ReleaseControllers();
     WindowPlacementPersistence::Flush(true);
+#if defined(__SWITCH__)
+    SwitchPlatform::ChainToLauncher();
+#endif
 #if defined(_WIN32)
     ::ExitProcess(0);
 #else

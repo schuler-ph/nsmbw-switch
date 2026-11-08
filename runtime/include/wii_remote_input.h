@@ -116,4 +116,7 @@ bool PeriodicRescanEnabled();
 // Rescans issued since a Wii controller was last seen.
 uint32_t ScanCount();
 
+// NSMBW_INPUT_SCRIPT: true once its last event ended `graceMs` ago (false without a script).
+bool ScriptFinished(uint64_t graceMs);
+
 } // namespace WiiRemoteInput

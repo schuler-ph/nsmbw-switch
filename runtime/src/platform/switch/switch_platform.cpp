@@ -456,8 +456,37 @@ void EarlyInit() noexcept {
         }
         std::fclose(env);
     }
+    // --env=NAME=value launch arguments (nxlink ... nsmbw.nro --env=NSMBW_PERF_OVERLAY=1) win over
+    // env.txt, like --gfx-flags= over gfx_flags.txt.
+    for (int i = 1; i < __system_argc; ++i) {
+        constexpr char kPrefix[] = "--env=";
+        const char* arg = __system_argv[i];
+        if (arg == nullptr || std::strncmp(arg, kPrefix, sizeof(kPrefix) - 1) != 0) {
+            continue;
+        }
+        const std::string item(arg + sizeof(kPrefix) - 1);
+        if (const size_t eq = item.find('='); eq != std::string::npos && eq > 0) {
+            setenv(item.substr(0, eq).c_str(), item.substr(eq + 1).c_str(), 1);
+            std::fprintf(stderr, "[switch] %s (launch argument)\n", item.c_str());
+        }
+    }
     // Last, so that everything above reaches the PC from the link's queue (devhost.txt).
     DevLink::Start();
+}
+
+void ChainToLauncher() noexcept {
+    static constexpr char kLauncher[] = "sdmc:/switch/nsmbw-launcher/launcher.nro";
+    if (const char* off = std::getenv("NSMBW_NO_LAUNCHER"); off != nullptr && *off == '1') {
+        return;
+    }
+    struct stat info {};
+    if (!envHasNextLoad() || stat(kLauncher, &info) != 0) {
+        return;
+    }
+    // argv[0] is the program's own path, quoted as hbloader expects.
+    if (R_SUCCEEDED(envSetNextLoad(kLauncher, "\"sdmc:/switch/nsmbw-launcher/launcher.nro\""))) {
+        std::fprintf(stderr, "[switch] returning to %s\n", kLauncher);
+    }
 }
 
 void ShowConsoleMessage(const std::string& text) noexcept {
@@ -485,6 +514,7 @@ void ShowErrorDialog(const std::string& shortText, const std::string& longText) 
 }
 
 [[noreturn]] void TerminateNow(int code) noexcept {
+    ChainToLauncher();
     std::fflush(stdout);
     std::fflush(stderr);
     std::_Exit(code);

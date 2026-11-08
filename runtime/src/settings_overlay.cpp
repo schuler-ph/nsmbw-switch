@@ -20,6 +20,7 @@
 #include "det_clock.h"
 #include "guest_interrupt_context.h"
 #include "memory.h"
+#include "perf_monitor.h"
 
 #include <imgui.h>
 #include <SDL3/SDL_events.h>
@@ -2120,6 +2121,7 @@ void Draw() noexcept {
     }
     NetplayUi::Draw();
     DrawFpsOverlay();
+    PerfMonitor::DrawOverlay();
     DrawTopBar();
     DrawExitPrompt();
     controller_mapping_wizard::Draw();

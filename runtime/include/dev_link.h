@@ -15,14 +15,16 @@
 //   H <json>                hello after every (re)connect: start_ms (same for one process), frame
 //   L1 <text> / L2 <text>   one stdout / stderr line
 //   F <json>                one presented frame (only while connected)
-//   S <json>                one-second summary (queued even while disconnected)
+//   S <json>                one-second summary from PerfMonitor (queued even while disconnected)
 //   A <text>                answer to a command
 //   I <id> <w> <h> <bytes>  followed by <bytes> of tightly packed RGBA8, row 0 at the top
-// PC -> Switch, one command per line: ping, status, screenshot [count], quit,
-//   press <BUTTONS> [ms] (Wii Remote names joined by '+', as in NSMBW_INPUT_SCRIPT), mark <text>.
+// PC -> Switch, one command per line: ping, status, screenshot [count], quit, overlay [on|off],
+//   summary, press <BUTTONS> [ms] (Wii Remote names joined by '+', as in NSMBW_INPUT_SCRIPT),
+//   mark <text>.
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace DevLink {
 
@@ -39,6 +41,8 @@ struct FrameSample {
     double endFrameMs = 0;
     double paceMs = 0;
     double cpuMs = 0;      // the game thread's own CPU time over the frame
+    uint32_t retraceCount = 0;  // VI retraces so far
+    uint64_t viIntervalNs = 0;  // the VI's nominal retrace interval
 };
 
 #if defined(__SWITCH__)
@@ -51,11 +55,17 @@ void LogChunk(int stream, const char* data, size_t length) noexcept;
 void OnFrame(const FrameSample& sample) noexcept;
 // From the crash handler: gives the link thread up to `timeoutMs` to send what is queued.
 void FlushForCrash(uint32_t timeoutMs) noexcept;
+// One "S" record (PerfMonitor's one-second summary, a JSON object).
+void PushSummary(const std::string& json) noexcept;
+// Ends the program like HOME -> Close once the queue is sent (at once without a link).
+void RequestQuit() noexcept;
 #else
 inline void Start() noexcept {}
 inline void LogChunk(int, const char*, size_t) noexcept {}
 inline void OnFrame(const FrameSample&) noexcept {}
 inline void FlushForCrash(uint32_t) noexcept {}
+inline void PushSummary(const std::string&) noexcept {}
+inline void RequestQuit() noexcept {}
 #endif
 
 } // namespace DevLink

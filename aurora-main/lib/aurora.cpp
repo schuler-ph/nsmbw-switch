@@ -31,6 +31,10 @@
 #if defined(__linux__)
 #include <pthread.h>
 #endif
+#if defined(__SWITCH__)
+#include <switch.h>
+#endif
+#include <cstring>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -323,6 +327,7 @@ void frame_worker_main() noexcept {
   // Named for profilers and /proc (NSMBW_PROFILE_THREAD=FrameWorker samples this thread).
   pthread_setname_np(pthread_self(), "FrameWorker");
 #endif
+  aurora_register_perf_thread("frame_worker");
 
 #ifdef AURORA_ENABLE_GX
   // Owned by the worker for its whole lifetime so the sealed pass vector and
@@ -1184,6 +1189,7 @@ PresenterState g_presenter;
 std::atomic<bool> g_presenterStarted{false};
 
 void presenter_main() noexcept {
+  aurora_register_perf_thread("presenter");
   if (!SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH)) {
     Log.warn("Could not raise the asynchronous presenter thread priority: {}", SDL_GetError());
   }
@@ -2172,6 +2178,55 @@ void aurora_request_frame_capture(uint32_t frame, const char* outputPath) {
   aurora::g_captureOutputPath = outputPath != nullptr ? outputPath : "frame_capture.bmp";
   aurora::g_captureFrame.store(frame, std::memory_order_release);
 }
+namespace {
+struct PerfThread {
+  const char* group;
+  uint32_t handle;
+};
+std::mutex g_perfThreadMutex;
+std::vector<PerfThread> g_perfThreads;
+} // namespace
+
+void aurora_register_perf_thread(const char* group) {
+#if defined(__SWITCH__)
+  const Handle handle = threadGetCurHandle();
+  std::lock_guard lock(g_perfThreadMutex);
+  for (const PerfThread& thread : g_perfThreads) {
+    if (thread.handle == handle) return;
+  }
+  g_perfThreads.push_back({group, handle});
+#else
+  (void)group;
+#endif
+}
+
+size_t aurora_perf_thread_cpu(AuroraPerfThreadCpu* out, size_t max) {
+  size_t groups = 0;
+#if defined(__SWITCH__)
+  std::lock_guard lock(g_perfThreadMutex);
+  for (const PerfThread& thread : g_perfThreads) {
+    // Ticks the thread ran on any core (19.2 MHz); id 25 since 13.0.0, the older id before that.
+    u64 ticks = 0;
+    if (R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCount, thread.handle, TickCountInfo_Total)) &&
+        R_FAILED(svcGetInfo(&ticks, InfoType_ThreadTickCountDeprecated, thread.handle, TickCountInfo_Total))) {
+      continue;
+    }
+    size_t slot = 0;
+    while (slot < groups && std::strcmp(out[slot].group, thread.group) != 0) ++slot;
+    if (slot == groups) {
+      if (groups == max) continue;
+      out[groups++] = AuroraPerfThreadCpu{thread.group, 0, 0};
+    }
+    out[slot].cpuNanos += armTicksToNs(ticks);
+    ++out[slot].threads;
+  }
+#else
+  (void)out;
+  (void)max;
+#endif
+  return groups;
+}
+
 void aurora_request_frame_readback(uint32_t count, AuroraFrameReadbackCallback callback, void* user) {
   std::lock_guard lock(aurora::g_readbackMutex);
   aurora::g_readbackCount = callback != nullptr ? count : 0;

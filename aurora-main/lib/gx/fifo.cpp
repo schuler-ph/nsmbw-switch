@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "tracy/Tracy.hpp"
+#include <aurora/aurora.h>
 
 namespace aurora::gx::fifo {
 static Module Log("aurora::gx::fifo");
@@ -119,6 +120,7 @@ GxThread& gx_thread() {
   static GxThread* t = [] {
     auto* state = new GxThread();
     state->thread = std::thread([state] {
+      aurora_register_perf_thread("gx_fifo");
       for (;;) {
         std::vector<uint8_t> job;
         {

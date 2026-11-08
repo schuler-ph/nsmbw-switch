@@ -3,6 +3,7 @@
 
 #include "dev_link.h"
 
+#include "perf_monitor.h"
 #include "platform/switch_platform.h"
 #include "runtime_log.h"
 
@@ -60,14 +61,10 @@ std::deque<std::string> g_images;  // screenshots, sent before g_queue, never dr
 size_t g_queuedBytes = 0;
 std::string g_partial[3];  // unfinished stdout/stderr lines
 
-// Last frame and the running one-second summary (game thread only, apart from g_lastSample's
-// copy under g_mutex for "status").
+// The last frame, for "status" and the hello.
 FrameSample g_lastSample;
-struct Window {
-    uint64_t startNs = 0;
-    uint32_t frames = 0, slow = 0;
-    double frameSum = 0, frameMax = 0, gameSum = 0, gxSum = 0, cpuSum = 0, discSum = 0;
-} g_window;
+// Set by RequestQuit; the link thread sends what is queued, then ends the program.
+std::atomic<bool> g_quitRequested{false};
 
 std::string g_hostText;
 in_addr g_hostAddr{};
@@ -131,9 +128,9 @@ std::string Json(const char* format, ...) {
 std::string SampleJson(const FrameSample& s) {
     return Json("{\"frame\":%u,\"scene\":%u,\"frame_ms\":%.2f,\"game_ms\":%.2f,\"gx_ms\":%.2f,\"disc_ms\":%.2f,"
                 "\"disc_reads\":%u,\"present_ms\":%.2f,\"end_frame_ms\":%.2f,\"pace_ms\":%.2f,\"cpu_ms\":%.2f,"
-                "\"t_ms\":%llu}",
+                "\"retrace\":%u,\"t_ms\":%llu}",
                 s.frame, s.scene, s.frameMs, s.gameMs, s.gxMs, s.discMs, s.discReads, s.presentMs, s.endFrameMs,
-                s.paceMs, s.cpuMs, static_cast<unsigned long long>(NowNs() / 1000000ull));
+                s.paceMs, s.cpuMs, s.retraceCount, static_cast<unsigned long long>(NowNs() / 1000000ull));
 }
 
 // Screenshot readback, on aurora's presentation thread while the buffer is mapped.
@@ -180,7 +177,6 @@ int g_socket = -1;
 std::string g_sendBuffer;
 size_t g_sendOffset = 0;
 std::string g_commandBuffer;
-bool g_quitAfterFlush = false;
 
 void Disconnect(const char* why, int error) {
     if (g_socket >= 0) {
@@ -287,9 +283,15 @@ void HandleCommand(const std::string& line) {
         std::fprintf(stderr, "[devlink] mark: %s\n", rest.c_str());
         Answer("mark");
     } else if (verb == "quit") {
-        std::fprintf(stderr, "[devlink] quit requested from the PC\n");
         Answer("quit");
-        g_quitAfterFlush = true;
+        PerfMonitor::RequestExit("quit from the PC (dev link)");
+    } else if (verb == "overlay") {
+        const bool on = rest == "on" || rest == "1" || (rest.empty() || rest == "toggle" ? !PerfMonitor::Overlay() : false);
+        PerfMonitor::SetOverlay(on);
+        Answer(std::string("overlay ") + (on ? "on" : "off"));
+    } else if (verb == "summary") {
+        PerfMonitor::LogRunSummary("requested from the PC");
+        Answer("summary");
     } else if (!verb.empty()) {
         Answer("error unknown command '" + verb + "'");
     }
@@ -366,6 +368,7 @@ void ServiceSocket(int timeoutMs) {
 }
 
 void LinkMain() {
+    aurora_register_perf_thread("devlink");
     if (!SwitchPlatform::EnsureSockets()) {
         std::fprintf(stderr, "[devlink] socket service unavailable; link off\n");
         return;
@@ -373,6 +376,10 @@ void LinkMain() {
     bool announcedWait = false;
     for (;;) {
         if (g_socket < 0) {
+            if (g_quitRequested.load(std::memory_order_acquire)) {
+                AuroraSwitchRequestExit();  // nobody to send the rest to
+                g_quitRequested.store(false);
+            }
             if (!TryConnect()) {
                 if (!announcedWait) {
                     announcedWait = true;
@@ -386,13 +393,14 @@ void LinkMain() {
             std::fprintf(stderr, "[devlink] connected to %s\n", g_hostText.c_str());
         }
         ServiceSocket(20);
-        if (g_quitAfterFlush) {
-            // Let the answer and the last lines out, then end the program like HOME -> Close.
-            const uint64_t deadline = NowNs() + 1000000000ull;
+        if (g_quitRequested.load(std::memory_order_acquire)) {
+            // Let the answer, the summary and the last lines out, then end the program like
+            // HOME -> Close.
+            const uint64_t deadline = NowNs() + 2000000000ull;
             while (g_socket >= 0 && g_backlogBytes.load() > 0 && NowNs() < deadline) {
                 ServiceSocket(10);
             }
-            g_quitAfterFlush = false;
+            g_quitRequested.store(false);
             AuroraSwitchRequestExit();
         }
     }
@@ -480,39 +488,26 @@ void OnFrame(const FrameSample& sample) noexcept {
     if (g_state.load(std::memory_order_acquire) != State::On) {
         return;
     }
-    const uint64_t now = NowNs();
-    Window& w = g_window;
-    if (w.startNs == 0) w.startNs = now;
-    ++w.frames;
-    w.slow += sample.frameMs > 20.0 ? 1u : 0u;
-    w.frameSum += sample.frameMs;
-    w.frameMax = std::max(w.frameMax, sample.frameMs);
-    w.gameSum += sample.gameMs;
-    w.gxSum += sample.gxMs;
-    w.cpuSum += sample.cpuMs;
-    w.discSum += sample.discMs;
-    std::string summary;
-    if (now - w.startNs >= 1000000000ull) {
-        const double seconds = static_cast<double>(now - w.startNs) / 1e9;
-        const double n = w.frames;
-        summary = "S " +
-            Json("{\"t_ms\":%llu,\"frame\":%u,\"scene\":%u,\"fps\":%.2f,\"frame_avg\":%.2f,\"frame_max\":%.2f,"
-                 "\"game_avg\":%.2f,\"gx_avg\":%.2f,\"cpu_avg\":%.2f,\"disc_ms\":%.2f,\"slow\":%u,"
-                 "\"pipelines_queued\":%u,\"dropped\":%llu,\"connected\":%s}",
-                 static_cast<unsigned long long>(now / 1000000ull), sample.frame, sample.scene, n / seconds,
-                 w.frameSum / n, w.frameMax, w.gameSum / n, w.gxSum / n, w.cpuSum / n, w.discSum, w.slow,
-                 aurora_get_queued_pipeline_count(), static_cast<unsigned long long>(g_droppedLines.load()),
-                 g_connected.load() ? "true" : "false") +
-            "\n";
-        w = Window{};
-        w.startNs = now;
-    }
     const bool connected = g_connected.load(std::memory_order_acquire);
     std::string frame = connected ? "F " + SampleJson(sample) + "\n" : std::string();
     std::lock_guard lock(g_mutex);
     g_lastSample = sample;
     if (!frame.empty()) PushLocked(std::move(frame));
-    if (!summary.empty()) PushLocked(std::move(summary));
+}
+
+void PushSummary(const std::string& json) noexcept {
+    if (g_state.load(std::memory_order_acquire) != State::On) {
+        return;
+    }
+    Push("S " + json + "\n");
+}
+
+void RequestQuit() noexcept {
+    if (g_state.load(std::memory_order_acquire) == State::On) {
+        g_quitRequested.store(true, std::memory_order_release);  // the link thread finishes it
+    } else {
+        AuroraSwitchRequestExit();
+    }
 }
 
 void FlushForCrash(uint32_t timeoutMs) noexcept {

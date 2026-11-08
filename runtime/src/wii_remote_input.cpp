@@ -174,6 +174,13 @@ const InputScript& Script() {
     return script;
 }
 
+// When the script's clock started (its first read, +1 so that 0 means "not yet"), for ScriptFinished.
+std::atomic<uint64_t> g_scriptStartedAt{0};
+
+uint64_t ScriptClockMs() {
+    return DetClock::Enabled() ? DetClock::Now() / (TimeBaseContract::kTicksPerSecond / 1000) : SDL_GetTicks();
+}
+
 bool ScriptedSample(uint32_t chan, KpadSample& sample) {
     const InputScript& script = Script();
     if (!script.active || chan >= script.remotes) {
@@ -184,6 +191,7 @@ bool ScriptedSample(uint32_t chan, KpadSample& sample) {
         return DetClock::Enabled() ? DetClock::Now() / (TimeBaseContract::kTicksPerSecond / 1000) : SDL_GetTicks();
     };
     static const uint64_t originMs = clockMs();
+    g_scriptStartedAt.store(originMs + 1, std::memory_order_relaxed);
     static std::vector<bool> announced(script.events.size(), false);
     const uint64_t now = clockMs() - originMs;
     sample = {};
@@ -962,6 +970,19 @@ float AccelCalibrationProgress() {
 // Outcome of the last calibration run for the overlay, or nullptr before any.
 const char* AccelCalibrationMessage() {
     return g_calibrationMessage[0] != '\0' ? g_calibrationMessage : nullptr;
+}
+
+bool ScriptFinished(uint64_t graceMs) {
+    const InputScript& script = Script();
+    const uint64_t started = g_scriptStartedAt.load(std::memory_order_relaxed);
+    if (!script.active || script.events.empty() || started == 0) {
+        return false;
+    }
+    uint64_t lastEnd = 0;
+    for (const ScriptEvent& event : script.events) {
+        lastEnd = std::max(lastEnd, event.endMs);
+    }
+    return ScriptClockMs() - (started - 1) >= lastEnd + graceMs;
 }
 
 } // namespace WiiRemoteInput

@@ -4,6 +4,7 @@
 
 #include "abi_bridge.h"
 #include "audio_backend.h"
+#include <aurora/aurora.h>
 #include "ax_mix_kernels.h"
 #include "isa/big_endian.h"
 #include "memory.h"
@@ -1530,6 +1531,7 @@ private:
         // Off the guest core, above the pipeline compiler (src/platform/switch/switch_platform.cpp).
         SwitchConfigureAudioMixThread();
 #endif
+        aurora_register_perf_thread("audio_mix");
         for (;;) {
             {
                 std::unique_lock<std::mutex> lock(m_mixMutex);
