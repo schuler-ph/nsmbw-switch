@@ -1,0 +1,125 @@
+--- Abweichungen Arbeitsbaum gegen HEAD+Patches (leer = identisch):
+diff --git a/src/dawn/common/SystemUtils.cpp b/src/dawn/common/SystemUtils.cpp
+index eee5295982..5c64555091 100644
+--- a/src/dawn/common/SystemUtils.cpp
++++ b/src/dawn/common/SystemUtils.cpp
+@@ -50,6 +50,15 @@
+ 
+ #include <array>
+ 
++#if defined(__SWITCH__)
++// newlib provides these POSIX ABI symbols, but their declarations are hidden
++// by __STRICT_ANSI__ when Dawn is compiled with strict -std=c++20.
++extern "C" {
++int setenv(const char* name, const char* value, int overwrite);
++int unsetenv(const char* name);
++}
++#endif
++
+ namespace dawn {
+ 
+ #if DAWN_PLATFORM_IS(WINDOWS)
+diff --git a/src/dawn/native/deko3d/UamCompilerDeko3d.cpp b/src/dawn/native/deko3d/UamCompilerDeko3d.cpp
+index fadb53b3da..8792893819 100644
+--- a/src/dawn/native/deko3d/UamCompilerDeko3d.cpp
++++ b/src/dawn/native/deko3d/UamCompilerDeko3d.cpp
+@@ -29,6 +29,7 @@
+ // only translation unit that sees mesa headers.
+ #include "src/dawn/native/deko3d/UamCompilerDeko3d.h"
+ 
++#include <cstdint>
+ #include <mutex>
+ #include <vector>
+ 
+@@ -61,9 +62,15 @@ bool CompileGlslToDksh(SingleShaderStage stage,
+         *error = "uam rejected the shader (details were written to stderr)";
+         return false;
+     }
+-    std::vector<uint8_t> bytes;
++    // Pinned libuam takes caller-owned memory and aligns absolute pointers
++    // to 256 bytes while serializing DKSH. Its base must have that alignment.
++    const size_t size = compiler.CalculateDkshSize();
++    std::vector<uint8_t> storage(size + 255);
++    const auto aligned = (reinterpret_cast<std::uintptr_t>(storage.data()) + 255) &
++                         ~std::uintptr_t{255};
++    auto* bytes = reinterpret_cast<uint8_t*>(aligned);
+     compiler.OutputDkshToMemory(bytes);
+-    dksh->assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
++    dksh->assign(reinterpret_cast<const char*>(bytes), size);
+     return true;
+ }
+ 
+diff --git a/src/dawn/native/utils/WGPUHelpers.cpp b/src/dawn/native/utils/WGPUHelpers.cpp
+index c8dde717cc..7d90e1bcac 100644
+--- a/src/dawn/native/utils/WGPUHelpers.cpp
++++ b/src/dawn/native/utils/WGPUHelpers.cpp
+@@ -236,7 +236,17 @@ std::string_view NormalizeMessageString(StringView in) {
+     if (in.IsUndefined()) {
+         return {};
+     }
++#if defined(__SWITCH__)
++    // strnlen() is hidden by strict C++20 in newlib. Stop at the first NUL
++    // or the explicit bound; WGPU_STRLEN also works for terminated strings.
++    size_t length = 0;
++    while (length < in.length && DAWN_UNSAFE_TODO(in.data[length]) != '\0') {
++        ++length;
++    }
++    return std::string_view(in.data, length);
++#else
+     return std::string_view(in.data, DAWN_UNSAFE_TODO(strnlen(in.data, in.length)));
++#endif
+ }
+ 
+ }  // namespace dawn::native::utils
+diff --git a/src/dawn/utils/SystemUtils.cpp b/src/dawn/utils/SystemUtils.cpp
+index 33a7bab5b4..ceab39e612 100644
+--- a/src/dawn/utils/SystemUtils.cpp
++++ b/src/dawn/utils/SystemUtils.cpp
+@@ -29,7 +29,9 @@
+ 
+ #include "src/utils/platform.h"
+ 
+-#if DAWN_PLATFORM_IS(WINDOWS)
++#if defined(__SWITCH__)
++#include <switch.h>
++#elif DAWN_PLATFORM_IS(WINDOWS)
+ #include "src/utils/windows_with_undefs.h"
+ #elif DAWN_PLATFORM_IS(POSIX)
+ #include <unistd.h>
+@@ -39,7 +41,13 @@
+ 
+ namespace dawn::utils {
+ 
+-#if DAWN_PLATFORM_IS(WINDOWS)
++#if defined(__SWITCH__)
++void USleep(unsigned int usecs) {
++    // Strict -std=c++20 hides newlib's usleep(). Horizon takes nanoseconds.
++    // Widen before conversion so the full unsigned-microsecond range fits.
++    svcSleepThread(static_cast<int64_t>(usecs) * 1000);
++}
++#elif DAWN_PLATFORM_IS(WINDOWS)
+ void USleep(unsigned int usecs) {
+     Sleep(static_cast<DWORD>(usecs / 1000));
+ }
+diff --git a/src/tint/utils/text_generator/text_generator.cc b/src/tint/utils/text_generator/text_generator.cc
+index a2a616305a..a9dd9f2056 100644
+--- a/src/tint/utils/text_generator/text_generator.cc
++++ b/src/tint/utils/text_generator/text_generator.cc
+@@ -116,7 +116,17 @@ std::string TextGenerator::TextBuffer::String(uint32_t indent /* = 0 */) const {
+ 
+ std::string TextGenerator::TextBuffer::MinifiedString() const {
+     /// Returns `true` if @p c is the start of an identifier codepoint.
++#ifdef __SWITCH__
++    // isascii() is a non-ISO newlib extension hidden by strict -std=c++20.
++    // UTF-8 continuation/leading bytes are identifier bytes here, matching
++    // the upstream !isascii(c) behavior without enabling GNU extensions.
++    auto is_ident_char = [](char c) {
++        const auto uc = static_cast<unsigned char>(c);
++        return std::isalnum(uc) || c == '_' || uc > 0x7f;
++    };
++#else
+     auto is_ident_char = [](char c) { return std::isalnum(c) || c == '_' || !isascii(c); };
++#endif
+ 
+     bool previous_is_ident = false;
+     bool in_whitespace = false;
