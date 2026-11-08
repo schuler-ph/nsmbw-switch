@@ -67,9 +67,8 @@ inline void Flush(bool force = false) {
     settings_overlay::ReleaseControllers();
     WindowPlacementPersistence::Flush(true);
 #if defined(__SWITCH__)
-    SwitchPlatform::ChainToLauncher();
-#endif
-#if defined(_WIN32)
+    SwitchPlatform::ExitProgram(EXIT_SUCCESS);
+#elif defined(_WIN32)
     ::ExitProcess(0);
 #else
     std::_Exit(EXIT_SUCCESS);
