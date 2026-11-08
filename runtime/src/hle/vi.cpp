@@ -835,6 +835,13 @@ bool AdvanceDueRetraces(CpuContext* ctx, int maxToProcess, bool serviceAurora)
 
 } // namespace
 
+// NSMBW: presented game frames so far (the "frame N" of the scene log). Frame-timed input
+// scripts (NSMBW_INPUT_SCRIPT_UNIT=frames) and the player log count in these, so a run replays the
+// same inputs on the same game frames whatever the host's speed.
+extern "C" uint32_t NsmbwPresentedFrames() {
+    return s_presentedXfbFrames.load(std::memory_order_relaxed);
+}
+
 // Force one retrace boundary to pass, whether or not its wall-clock deadline
 // has arrived, so the guest's retrace callbacks (AsyncDisplay's counters and
 // friends) run. VI_HLE_PollRetrace below is the time-driven counterpart.

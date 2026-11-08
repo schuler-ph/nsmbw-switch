@@ -3,6 +3,7 @@
 #include "det_clock.h"
 #include "wii_remote_input.h"
 
+#include "memory.h"
 #include "runtime_config.h"
 #include "runtime_log.h"
 #include "virtual_remote.h"
@@ -79,13 +80,35 @@ constexpr uint32_t kWpadLeft = 0x0001, kWpadRight = 0x0002, kWpadDown = 0x0004, 
 // Wii Remote at rest. Buttons: A B ONE TWO PLUS MINUS HOME UP DOWN LEFT RIGHT (also 1 and 2); the
 // D-pad names are the remote's own, so held sideways RIGHT is screen up and DOWN is screen right.
 // A duration of "<ms>/<period>x<count>" repeats the press: "47000:TWO:300/700x80" jumps every 0.7 s.
+// NSMBW_INPUT_SCRIPT_UNIT=frames counts every number in presented game frames instead of ms (the
+// "frame N" of the scene log): the same inputs then land on the same game frames however fast the
+// host runs, which a measurement run needs (a 40 % speed run would otherwise see every press late).
+// "<scene>[#<n>]@<start>:<buttons>..." times the event from the n-th entry (1 = first; none = every
+// entry) into scene <scene> (hex, dScene_c's profile number: 000 boot, 005 a course, including the
+// title screen's, 00A the file select, 003 the world map) and keeps it to that scene, so menu and
+// loading times do not shift a course's inputs: "005#2@120:DOWN:3000" holds right from frame 120 of
+// the second course entered, which with NSMBW_WARP is the warp's course after the title's.
 struct ScriptEvent {
     uint64_t startMs = 0;
     uint64_t endMs = 0;
     uint32_t bits = 0;
     uint32_t chan = 0;
+    int32_t scene = -1;       // -1: timed from the script's start
+    uint32_t sceneEntry = 0;  // 0: any entry into `scene`
+    bool sceneEntryOrLater = false;  // "#<n>+": the n-th entry and every later one
     std::string text;
 };
+
+// Scene entries seen by the script's clock: which scene is current, since when, and how often each
+// one has been entered. Read on the game thread with every sample.
+struct SceneTrack {
+    uint32_t now = 0xFFFFFFFFu;
+    uint64_t enteredAt = 0;
+    std::array<uint32_t, 0x300> entries{};
+};
+SceneTrack g_sceneTrack;
+// When each scene-relative event last ended on the script's clock (0: not yet), for ScriptFinished.
+std::vector<uint64_t> g_relativeEventEnds;
 
 struct InputScript {
     bool active = false;
@@ -107,6 +130,8 @@ uint32_t ScriptButtonBit(const std::string& name) {
     if (name == "RIGHT") return kWpadRight;
     return 0;
 }
+
+bool ScriptUnitFrames();  // below
 
 const InputScript& Script() {
     static const InputScript script = [] {
@@ -132,7 +157,18 @@ const InputScript& Script() {
                 const size_t c3 = c2 == std::string::npos ? std::string::npos : item.find(':', c2 + 1);
                 ScriptEvent event;
                 event.text = item;
-                event.startMs = std::strtoull(item.substr(0, c1).c_str(), nullptr, 10);
+                std::string start = item.substr(0, c1);
+                if (const size_t at = start.find('@'); at != std::string::npos) {
+                    std::string ref = start.substr(0, at);
+                    start = start.substr(at + 1);
+                    if (const size_t hash = ref.find('#'); hash != std::string::npos) {
+                        event.sceneEntry = static_cast<uint32_t>(std::strtoul(ref.substr(hash + 1).c_str(), nullptr, 10));
+                        event.sceneEntryOrLater = ref.back() == '+';
+                        ref = ref.substr(0, hash);
+                    }
+                    event.scene = static_cast<int32_t>(std::strtol(ref.c_str(), nullptr, 16));
+                }
+                event.startMs = std::strtoull(start.c_str(), nullptr, 10);
                 const std::string buttons = item.substr(c1 + 1, c2 == std::string::npos ? std::string::npos : c2 - c1 - 1);
                 const uint64_t duration = c2 == std::string::npos ? 150 : std::strtoull(item.substr(c2 + 1).c_str(), nullptr, 10);
                 if (c3 != std::string::npos) {
@@ -168,7 +204,8 @@ const InputScript& Script() {
             if (comma == std::string::npos) break;
             pos = comma + 1;
         }
-        RT_LOGF(RT_TAG_RUNTIME, "scripted Wii Remote input on channel 1: %zu event(s)\n", parsed.events.size());
+        RT_LOGF(RT_TAG_RUNTIME, "scripted Wii Remote input on channel 1: %zu event(s), timed in %s\n",
+                parsed.events.size(), ScriptUnitFrames() ? "presented frames" : "ms");
         return parsed;
     }();
     return script;
@@ -177,7 +214,21 @@ const InputScript& Script() {
 // When the script's clock started (its first read, +1 so that 0 means "not yet"), for ScriptFinished.
 std::atomic<uint64_t> g_scriptStartedAt{0};
 
+extern "C" uint32_t NsmbwPresentedFrames();  // vi.cpp
+
+bool ScriptUnitFrames() {
+    static const bool frames = [] {
+        const char* unit = std::getenv("NSMBW_INPUT_SCRIPT_UNIT");
+        return unit != nullptr && std::strcmp(unit, "frames") == 0;
+    }();
+    return frames;
+}
+
+// The script's clock: presented frames, the deterministic virtual clock, or the host's ms.
 uint64_t ScriptClockMs() {
+    if (ScriptUnitFrames()) {
+        return NsmbwPresentedFrames();
+    }
     return DetClock::Enabled() ? DetClock::Now() / (TimeBaseContract::kTicksPerSecond / 1000) : SDL_GetTicks();
 }
 
@@ -186,24 +237,67 @@ bool ScriptedSample(uint32_t chan, KpadSample& sample) {
     if (!script.active || chan >= script.remotes) {
         return false;
     }
-    // Deterministic mode times the script on the virtual timeline, so a run replays identically.
-    const auto clockMs = [] {
-        return DetClock::Enabled() ? DetClock::Now() / (TimeBaseContract::kTicksPerSecond / 1000) : SDL_GetTicks();
-    };
-    static const uint64_t originMs = clockMs();
+    // Deterministic mode times the script on the virtual timeline, frame mode on presented frames,
+    // so a run replays identically.
+    static const uint64_t originMs = ScriptClockMs();
     g_scriptStartedAt.store(originMs + 1, std::memory_order_relaxed);
     static std::vector<bool> announced(script.events.size(), false);
-    const uint64_t now = clockMs() - originMs;
+    if (g_relativeEventEnds.size() != script.events.size()) {
+        g_relativeEventEnds.assign(script.events.size(), 0);
+    }
+    const uint64_t clock = ScriptClockMs();
+    const uint64_t now = clock - originMs;
+    if (uint32_t sceneWord = 0; Memory::TryRead32(0x80428730u, sceneWord)) {
+        const uint32_t scene = sceneWord & 0xFFFFu;
+        if (scene != g_sceneTrack.now) {
+            // Events bound to the scene just left can run no further: they end now (ScriptFinished).
+            for (size_t i = 0; i < script.events.size(); ++i) {
+                const ScriptEvent& event = script.events[i];
+                // ("#<n>+" events re-arm on the next entry, so they end only by running out there.)
+                if (event.scene >= 0 && static_cast<uint32_t>(event.scene) == g_sceneTrack.now &&
+                    g_relativeEventEnds[i] == 0 && g_sceneTrack.now < g_sceneTrack.entries.size() &&
+                    !event.sceneEntryOrLater &&
+                    (event.sceneEntry == 0 || g_sceneTrack.entries[g_sceneTrack.now] == event.sceneEntry)) {
+                    g_relativeEventEnds[i] = clock;
+                }
+            }
+            g_sceneTrack.now = scene;
+            g_sceneTrack.enteredAt = clock;
+            if (scene < g_sceneTrack.entries.size()) {
+                ++g_sceneTrack.entries[scene];
+            }
+            RT_LOGF(RT_TAG_RUNTIME, "script: scene 0x%03X entry %u at %llu %s\n", scene,
+                    scene < g_sceneTrack.entries.size() ? g_sceneTrack.entries[scene] : 0u,
+                    static_cast<unsigned long long>(clock), ScriptUnitFrames() ? "frames" : "ms");
+        }
+    }
     sample = {};
     sample.acc[1] = -1.0f;  // at rest, KPAD frame
     for (size_t i = 0; i < script.events.size(); ++i) {
         const ScriptEvent& event = script.events[i];
-        if (event.chan == chan && now >= event.startMs && now < event.endMs) {
+        if (event.chan != chan) {
+            continue;
+        }
+        uint64_t at = now;
+        if (event.scene >= 0) {
+            const uint32_t entry = g_sceneTrack.now < g_sceneTrack.entries.size() ? g_sceneTrack.entries[g_sceneTrack.now] : 0;
+            const bool inScene = g_sceneTrack.now == static_cast<uint32_t>(event.scene) &&
+                                 (event.sceneEntry == 0 || entry == event.sceneEntry ||
+                                  (event.sceneEntryOrLater && entry > event.sceneEntry));
+            if (!inScene) {
+                continue;
+            }
+            at = clock - g_sceneTrack.enteredAt;
+            if (at >= event.endMs) {
+                g_relativeEventEnds[i] = std::max(g_relativeEventEnds[i], g_sceneTrack.enteredAt + event.endMs);
+            }
+        }
+        if (at >= event.startMs && at < event.endMs) {
             sample.hold |= event.bits;
             if (!announced[i]) {
                 announced[i] = true;
-                RT_LOGF(RT_TAG_RUNTIME, "scripted input at %llu ms: %s\n", static_cast<unsigned long long>(now),
-                        event.text.c_str());
+                RT_LOGF(RT_TAG_RUNTIME, "scripted input at %llu %s: %s\n", static_cast<unsigned long long>(at),
+                        ScriptUnitFrames() ? "frames" : "ms", event.text.c_str());
             }
         }
     }
@@ -978,11 +1072,23 @@ bool ScriptFinished(uint64_t graceMs) {
     if (!script.active || script.events.empty() || started == 0) {
         return false;
     }
+    // Absolute events end at a known clock; a scene-relative one only once its scene has been reached
+    // and it has run out there (a path that never gets to its course never "finishes": use
+    // NSMBW_EXIT_AFTER_S as the safety net).
     uint64_t lastEnd = 0;
-    for (const ScriptEvent& event : script.events) {
-        lastEnd = std::max(lastEnd, event.endMs);
+    for (size_t i = 0; i < script.events.size(); ++i) {
+        const ScriptEvent& event = script.events[i];
+        if (event.scene < 0) {
+            lastEnd = std::max(lastEnd, started - 1 + event.endMs);
+            continue;
+        }
+        const uint64_t end = i < g_relativeEventEnds.size() ? g_relativeEventEnds[i] : 0;
+        if (end == 0) {
+            return false;
+        }
+        lastEnd = std::max(lastEnd, end);
     }
-    return ScriptClockMs() - (started - 1) >= lastEnd + graceMs;
+    return ScriptClockMs() >= lastEnd + graceMs;
 }
 
 } // namespace WiiRemoteInput
