@@ -479,6 +479,19 @@ void EarlyInit() noexcept {
             std::fprintf(stderr, "[switch] %s (launch argument)\n", item.c_str());
         }
     }
+    // NSMBW_LOG_SD=0: no log files on the SD card from here on. Each stderr line otherwise costs the
+    // game thread a synchronous SD write (14-17 % of it in the played 1-1 of the 2026-11-08
+    // GX-hand-off runs, with ~140 lines in 20 s); the devlink harness on the PC keeps the full log.
+    if (const char* sd = std::getenv("NSMBW_LOG_SD"); sd != nullptr && sd[0] == '0') {
+        for (int stream = 1; stream <= 2; ++stream) {
+            if (g_logFile[stream] >= 0) {
+                static const char note[] = "[switch] NSMBW_LOG_SD=0: log continues on the devlink only\n";
+                (void)write(g_logFile[stream], note, sizeof(note) - 1);
+                close(g_logFile[stream]);
+                g_logFile[stream] = -1;
+            }
+        }
+    }
     // Last, so that everything above reaches the PC from the link's queue (devhost.txt).
     DevLink::Start();
 }
