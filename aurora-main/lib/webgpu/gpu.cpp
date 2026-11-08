@@ -82,6 +82,7 @@ static wgpu::AdapterInfo g_adapterInfo;
 static wgpu::SurfaceCapabilities g_surfaceCapabilities;
 bool g_bcTexturesSupported;
 bool g_safeVertexFetch = false;
+bool g_gxWriteBuffer = false;
 bool g_fastTev = false;
 bool g_watchLightTextureReuse = false;
 uint32_t g_shaderDebug = 0;
@@ -108,6 +109,9 @@ static std::atomic_bool g_initialized{false};
 //   notex      every texture samples as grey (is it geometry or texturing?)
 //   uvvis      texture samples show their coordinates instead
 //   dumpwgsl   write every generated shader to <cache>/wgsl
+//   gxwritebuffer  upload GX vertex/uniform/index/storage data with Queue::WriteBuffer instead of
+//              the staging ring plus CommandEncoder::CopyBufferToBuffer (is the copy path broken?)
+//   dk_*       deko3d backend synchronisation switches, read by Dawn itself (DeviceDeko3d.cpp)
 //   nocache    no Dawn blob cache: every shader and pipeline compiles from scratch (cold-start timing)
 //   +name      enable the Dawn toggle `name`; -name disables it
 static std::vector<std::string> g_gfxFlags;
@@ -202,6 +206,8 @@ static void choose_gpu_compat() {
              mali ? "off (auto: ARM Mali; enable compatibility if broken)" :
              mobile ? "on (auto: unknown mobile GPU)" : "off (auto)";
   }
+  g_gxWriteBuffer = gfx_flag("gxwritebuffer");
+  if (g_gxWriteBuffer) Log.info("GX uploads via Queue::WriteBuffer (debug flag)");
   g_fastTev = gfx_flag("fasttev") || (intelD3D11 && !gfx_flag("nofasttev"));
   g_watchLightTextureReuse = intelD3D11;
   Log.info("Fast TEV shaders {}", g_fastTev ? "on" : "off");

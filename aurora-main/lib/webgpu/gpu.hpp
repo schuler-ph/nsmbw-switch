@@ -61,6 +61,9 @@ extern bool g_bcTexturesSupported;
 // Vertex fetch written for drivers that miscompile aurora's storage-buffer vertex pulling (Adreno:
 // skinned models' texture coordinates and normals come out scrambled). See gx/shader.cpp.
 extern bool g_safeVertexFetch;
+// Debug flag `gxwritebuffer`: upload the GX vertex, uniform, index and storage data with
+// Queue::WriteBuffer (the path ImGui uses) instead of the staging ring plus CopyBufferToBuffer.
+extern bool g_gxWriteBuffer;
 // TEV stages in float math instead of byte-exact integer math where that's safe: much less work per
 // pixel, for GPUs too weak to afford exactness (gx/shader.cpp, tev_fast_op).
 extern bool g_fastTev;

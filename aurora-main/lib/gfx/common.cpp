@@ -1212,20 +1212,28 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
   const auto writeBuffer = [&](ByteBuffer& buf, wgpu::Buffer& out, uint64_t size, std::string_view label) {
     const auto writeSize = buf.size(); // Only need to copy this many bytes
     if (writeSize > 0) {
-      cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], bufferOffset, out, 0, AURORA_ALIGN(writeSize, 4));
+      if (webgpu::g_gxWriteBuffer) {
+        // Debug path: the staging range is still mapped here, so its CPU copy is current.
+        g_queue.WriteBuffer(out, 0, buf.data(), AURORA_ALIGN(writeSize, 4));
+      } else {
+        cmd.CopyBufferToBuffer(g_stagingBuffers[currentStagingBuffer], bufferOffset, out, 0,
+                               AURORA_ALIGN(writeSize, 4));
+      }
       buf.release();
     }
     bufferOffset += size;
     return writeSize;
   };
-  g_stagingBuffers[currentStagingBuffer].Unmap();
-  s_mappingState.reset();
   g_stats.drawCallCount = g_drawCallCount;
   g_stats.mergedDrawCallCount = g_mergedDrawCallCount;
+  // The uploads run before Unmap so the gxwritebuffer path can still read the mapped range; recording
+  // a copy from a mapped buffer is valid, only Submit needs it unmapped.
   g_stats.lastVertSize = writeBuffer(g_verts, g_vertexBuffer, VertexBufferSize, "Vertex");
   g_stats.lastUniformSize = writeBuffer(g_uniforms, g_uniformBuffer, UniformBufferSize, "Uniform");
   g_stats.lastIndexSize = writeBuffer(g_indices, g_indexBuffer, IndexBufferSize, "Index");
   g_stats.lastStorageSize = writeBuffer(g_storage, g_storageBuffer, StorageBufferSize, "Storage");
+  g_stagingBuffers[currentStagingBuffer].Unmap();
+  s_mappingState.reset();
   flush_deferred_texture_writes();  // the static textures this frame loaded (TextureRef::lazy)
   if constexpr (UseTextureBuffer) {
     g_stats.lastTextureUploadSize = g_textureUpload.size();

@@ -1,0 +1,191 @@
+diff --git a/src/dawn/native/deko3d/CommandBufferDeko3d.cpp b/src/dawn/native/deko3d/CommandBufferDeko3d.cpp
+index f45d8aff6b..5b629ae923 100644
+--- a/src/dawn/native/deko3d/CommandBufferDeko3d.cpp
++++ b/src/dawn/native/deko3d/CommandBufferDeko3d.cpp
+@@ -426,7 +426,9 @@ MaybeError CommandBuffer::RecordCommands(DkCmdBuf cmdBuf) {
+                         buffer->GetGpuAddr() + copy->destination.offset + bytesPerImage * layer,
+                         // Strides in bytes: bytes per row, bytes per image.
+                         static_cast<uint32_t>(bytesPerRow), static_cast<uint32_t>(bytesPerImage)};
++                    device->BeforeCopyEngine(cmdBuf);
+                     dkCmdBufCopyImageToBuffer(cmdBuf, &view, &rect, &dst, 0);
++                    device->AfterCopyEngine(cmdBuf);
+                 }
+                 buffer->TrackUsage();
+                 break;
+@@ -465,7 +467,9 @@ MaybeError CommandBuffer::RecordCommands(DkCmdBuf cmdBuf) {
+                                            size.width, size.height, depth};
+                     DkImageRect dstRect = {dstOrigin.x, dstOrigin.y, dstIs3D ? dstOrigin.z : 0,
+                                            size.width, size.height, depth};
++                    device->BeforeCopyEngine(cmdBuf);
+                     dkCmdBufCopyImage(cmdBuf, &srcView, &srcRect, &dstView, &dstRect, 0);
++                    device->AfterCopyEngine(cmdBuf);
+                 }
+                 break;
+             }
+diff --git a/src/dawn/native/deko3d/DeviceDeko3d.cpp b/src/dawn/native/deko3d/DeviceDeko3d.cpp
+index 2689b32236..a0971c09cf 100644
+--- a/src/dawn/native/deko3d/DeviceDeko3d.cpp
++++ b/src/dawn/native/deko3d/DeviceDeko3d.cpp
+@@ -32,6 +32,8 @@
+ #include <algorithm>
+ #include <cstdio>
+ #include <cstring>
++#include <string_view>
++#include <cstdlib>
+ #include <utility>
+ #include <vector>
+ 
+@@ -300,6 +302,57 @@ DkCmdBuf Device::GetPendingCommandBuffer() {
+     return cmdBuf;
+ }
+ 
++namespace {
++// Synchronisation diagnosis, set through AURORA_GFX_FLAGS (sdmc:/switch/nsmbw/gfx_flags.txt):
++//   dk_copybarrier  full barrier with cache invalidation before and after every copy-engine command
++//   dk_inlinewrites buffer writes never use the copy engine, always the 3D engine's inline data
++//   dk_flushcopies  submit and wait for the GPU before and after every copy-engine command
++//   dk_waitsubmit   wait for the GPU after every queue submit
++struct SyncDebug {
++    bool copyBarrier = false;
++    bool inlineWrites = false;
++    bool flushCopies = false;
++    bool waitSubmit = false;
++};
++
++bool HasGfxFlag(std::string_view list, std::string_view name) {
++    while (!list.empty()) {
++        const size_t comma = list.find(',');
++        std::string_view item = list.substr(0, comma);
++        while (!item.empty() && item.front() == ' ') item.remove_prefix(1);
++        while (!item.empty() && item.back() == ' ') item.remove_suffix(1);
++        if (item == name) {
++            return true;
++        }
++        list = comma == std::string_view::npos ? std::string_view{} : list.substr(comma + 1);
++    }
++    return false;
++}
++
++const SyncDebug& GetSyncDebug() {
++    static const SyncDebug flags = [] {
++        const char* env = std::getenv("AURORA_GFX_FLAGS");
++        const std::string_view list = env != nullptr ? env : "";
++        SyncDebug f;
++        f.copyBarrier = HasGfxFlag(list, "dk_copybarrier");
++        f.inlineWrites = HasGfxFlag(list, "dk_inlinewrites");
++        f.flushCopies = HasGfxFlag(list, "dk_flushcopies");
++        f.waitSubmit = HasGfxFlag(list, "dk_waitsubmit");
++        std::fprintf(stderr,
++                     "[deko3d] sync debug: copybarrier=%d inlinewrites=%d flushcopies=%d "
++                     "waitsubmit=%d\n",
++                     int(f.copyBarrier), int(f.inlineWrites), int(f.flushCopies),
++                     int(f.waitSubmit));
++        return f;
++    }();
++    return flags;
++}
++
++constexpr uint32_t kCopyInvalidateFlags = DkInvalidateFlags_Image | DkInvalidateFlags_Shader |
++                                          DkInvalidateFlags_Descriptors |
++                                          DkInvalidateFlags_L2Cache;
++}  // namespace
++
+ MaybeError Device::SubmitPendingCommands(ExecutionSerial serial) {
+     // TEMP bring-up tracing: synchronous submits so a GPU fault kills the app right after the
+     // offending list, with its serial as the last line in the log.
+@@ -324,6 +377,9 @@ MaybeError Device::SubmitPendingCommands(ExecutionSerial serial) {
+     // Submitted lists only reach the GPU on a queue flush; without this, work (and the fence that
+     // completes MapAsync) waits for the next present.
+     dkQueueFlush(mDkQueue);
++    if (GetSyncDebug().waitSubmit) {
++        dkQueueWaitIdle(mDkQueue);
++    }
+     inFlight->uploadMemory = std::move(mPendingUploadMemory);
+     inFlight->destroyedMemory = std::move(mPendingDestroyedMemory);
+     inFlight->freedImageMemory = std::move(mPendingFreedImageMemory);
+@@ -639,18 +695,42 @@ MaybeError Device::AllocateUploadMemory(uint64_t size, uint8_t** cpuAddr, DkGpuA
+     return {};
+ }
+ 
++void Device::BeforeCopyEngine(DkCmdBuf cmdBuf) {
++    const SyncDebug& debug = GetSyncDebug();
++    if (debug.flushCopies && cmdBuf == mCmdBuf->cmdBuf) {
++        dkQueueSubmitCommands(mDkQueue, dkCmdBufFinishList(cmdBuf));
++        dkQueueWaitIdle(mDkQueue);
++    }
++    if (debug.copyBarrier) {
++        dkCmdBufBarrier(cmdBuf, DkBarrier_Full, kCopyInvalidateFlags);
++    }
++}
++
++void Device::AfterCopyEngine(DkCmdBuf cmdBuf) {
++    const SyncDebug& debug = GetSyncDebug();
++    if (debug.copyBarrier) {
++        dkCmdBufBarrier(cmdBuf, DkBarrier_Full, kCopyInvalidateFlags);
++    }
++    if (debug.flushCopies && cmdBuf == mCmdBuf->cmdBuf) {
++        dkQueueSubmitCommands(mDkQueue, dkCmdBufFinishList(cmdBuf));
++        dkQueueWaitIdle(mDkQueue);
++    }
++}
++
+ void Device::RecordBufferWrite(DkGpuAddr dst, const uint8_t* data, uint64_t size) {
+     DAWN_ASSERT(size % 4 == 0);
+     DkCmdBuf cmdBuf = GetPendingCommandBuffer();
+     // Large writes would bloat command memory; stage them in upload memory and copy on the GPU.
+     constexpr uint64_t kInlineLimit = 4096;
+-    if (size > kInlineLimit) {
++    if (size > kInlineLimit && !GetSyncDebug().inlineWrites) {
+         uint8_t* upload = nullptr;
+         DkGpuAddr uploadAddr = 0;
+         MaybeError allocated = AllocateUploadMemory(size, &upload, &uploadAddr);
+         if (allocated.IsSuccess()) {
+             std::memcpy(upload, data, size);
++            BeforeCopyEngine(cmdBuf);
+             dkCmdBufCopyBuffer(cmdBuf, uploadAddr, dst, static_cast<uint32_t>(size));
++            AfterCopyEngine(cmdBuf);
+             return;
+         }
+         allocated.AcquireError();
+@@ -988,7 +1068,10 @@ MaybeError Device::RecordTextureUpload(const TextureCopy& dst,
+         DkImageRect rect = {origin.x, origin.y, is3D ? origin.z : 0,
+                             copySizePixels.width, copySizePixels.height, imagesPerCopy};
+         (void)rowsPerImage;
+-        dkCmdBufCopyBufferToImage(GetPendingCommandBuffer(), &copyBuf, &view, &rect, 0);
++        DkCmdBuf cmdBuf = GetPendingCommandBuffer();
++        BeforeCopyEngine(cmdBuf);
++        dkCmdBufCopyBufferToImage(cmdBuf, &copyBuf, &view, &rect, 0);
++        AfterCopyEngine(cmdBuf);
+     }
+     return {};
+ }
+diff --git a/src/dawn/native/deko3d/DeviceDeko3d.h b/src/dawn/native/deko3d/DeviceDeko3d.h
+index 380daf93a8..e88350c440 100644
+--- a/src/dawn/native/deko3d/DeviceDeko3d.h
++++ b/src/dawn/native/deko3d/DeviceDeko3d.h
+@@ -112,6 +112,11 @@ class Device final : public DeviceBase {
+     // which hung the GPU (timeout) on hardware. `size` must be a multiple of 4, as WebGPU requires.
+     void RecordBufferWrite(DkGpuAddr dst, const uint8_t* data, uint64_t size);
+ 
++    // Diagnosis switches (AURORA_GFX_FLAGS, read once): wrap every copy-engine command
++    // (dkCmdBufCopy*) in full barriers (dk_copybarrier) or in submit-and-wait (dk_flushcopies).
++    void BeforeCopyEngine(DkCmdBuf cmdBuf);
++    void AfterCopyEngine(DkCmdBuf cmdBuf);
++
+     ResultOrError<uint32_t> AllocateImageDescriptor(const DkImageView& view, bool loadStore);
+     void ReleaseImageDescriptor(uint32_t id);
+     ResultOrError<uint32_t> AllocateSamplerDescriptor(const DkSampler& sampler);
+diff --git a/src/dawn/native/deko3d/TextureDeko3d.cpp b/src/dawn/native/deko3d/TextureDeko3d.cpp
+index 9f5ff45d07..dd60a4cafa 100644
+--- a/src/dawn/native/deko3d/TextureDeko3d.cpp
++++ b/src/dawn/native/deko3d/TextureDeko3d.cpp
+@@ -240,7 +240,9 @@ MaybeError Texture::ClearTexture(const SubresourceRange& range,
+                 DkCopyBuf src = {gpuAddr, 0, 0};
+                 DkImageRect rect = {0, 0, 0, mipSize.width, mipSize.height,
+                                     static_cast<uint32_t>(depth)};
++                device->BeforeCopyEngine(cmdBuf);
+                 dkCmdBufCopyBufferToImage(cmdBuf, &src, &view, &rect, 0);
++                device->AfterCopyEngine(cmdBuf);
+             }
+             if (kDeko3dTrace) {
+                 char what[160];
