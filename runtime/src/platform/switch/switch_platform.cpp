@@ -6,6 +6,7 @@
 
 #include "platform/switch_platform.h"
 
+#include <atomic>
 #include <cerrno>
 #include <condition_variable>
 #include <cstdarg>
@@ -90,6 +91,49 @@ alignas(16) u8 __nx_exception_stack[0x10000];
 u64 __nx_exception_stack_size = sizeof(__nx_exception_stack);
 }
 
+// Thread placement, after DriftDroid's runtime/src/main.cpp (SwitchSpreadHelperThread and the
+// Switch*Thread hooks). libnx's __syscall_thread_create (disassembled from libnx.a: threadCreate
+// with priority 0x3B and cpuid -2, then svcSetThreadCoreMask(-1, process mask)) starts every
+// std::thread on the process default core - the core the guest thread runs on - at the
+// time-sliced priority 0x3B. In runs 12/13 aurora's pipeline worker, the frame and presentation
+// workers and the AX mixer all competed for core 0's leftovers while cores 1 and 2 idled: the boot
+// prewarm took ~1 100 s and game frames ran 25-220 ms.
+//
+// So every helper gets an ideal core drawn round-robin from the cores the guest is NOT on, with all
+// non-guest cores in its mask (biased, not pinned). Threads on the audio path ask for a priority
+// above 0x3B so they preempt the pipeline compiler, which stays at 0x3B on one core.
+namespace {
+std::atomic<int> g_switchGuestCore{-1};
+std::atomic<uint32_t> g_switchHelperCoreCursor{0};
+
+u64 SwitchHelperCoreMask() noexcept {
+    const int guestCore = g_switchGuestCore.load(std::memory_order_relaxed);
+    if (guestCore < 0) {
+        return 0;
+    }
+    u64 processMask = 0;
+    if (R_FAILED(svcGetInfo(&processMask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0))) {
+        return 0;
+    }
+    return processMask & ~(1ull << static_cast<unsigned>(guestCore));
+}
+
+void SwitchSpreadHelperThread(Handle handle) noexcept {
+    const u64 helperMask = SwitchHelperCoreMask();
+    if (helperMask == 0) {
+        return;  // guest core not recorded yet, or a single-core budget
+    }
+    const uint32_t slot = g_switchHelperCoreCursor.fetch_add(1, std::memory_order_relaxed);
+    int target = static_cast<int>(slot % static_cast<uint32_t>(__builtin_popcountll(helperMask)));
+    for (int core = 0; core < 64; ++core) {
+        if ((helperMask & (1ull << core)) != 0 && target-- == 0) {
+            svcSetThreadCoreMask(handle, core, helperMask);
+            return;
+        }
+    }
+}
+} // namespace
+
 // runtime/CMakeLists.txt links with -Wl,--wrap=__syscall_thread_create, which redirects every
 // newlib/libnx thread creation here. libnx gives a std::thread a 128 KiB stack, which Tint's WGSL
 // resolver (aurora's pipeline workers) and mesa's GLSL compiler overflow; raise the floor to 2 MiB.
@@ -103,7 +147,55 @@ extern "C" int __wrap___syscall_thread_create(void** thread, void* entry, void* 
     if (stackAddr == nullptr && stackSize < kMinimumThreadStack) {
         stackSize = kMinimumThreadStack;  // 4 KiB aligned, as libnx requires
     }
-    return __real___syscall_thread_create(thread, entry, arg, stackAddr, stackSize);
+    const int result = __real___syscall_thread_create(thread, entry, arg, stackAddr, stackSize);
+    if (result == 0 && thread != nullptr && *thread != nullptr) {
+        // libnx's thread object starts with the kernel handle (its Thread struct; the disassembly
+        // loads that first word and hands it to svcSetThreadCoreMask). The thread is already
+        // running, so the new placement applies from its next scheduling point.
+        SwitchSpreadHelperThread(*static_cast<const Handle*>(*thread));
+    }
+    return result;
+}
+
+// aurora's pipeline compilation workers (aurora-main/lib/gfx/pipeline_cache.cpp) call this when
+// they start: the lowest priority the process may use (0x3B, time-sliced) and only the highest
+// non-guest core, so the other helper core stays free for the frame/presentation workers and audio.
+extern "C" void SwitchConfigurePipelineWorkerThread() {
+    const u64 helperMask = SwitchHelperCoreMask();
+    Result maskRc = 0;
+    int core = -1;
+    if (helperMask != 0) {
+        core = 63 - __builtin_clzll(helperMask);
+        maskRc = svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, 1ull << core);
+    }
+    const Result prioRc = svcSetThreadPriority(CUR_THREAD_HANDLE, 0x3B);
+    std::fprintf(stderr, "[switch] pipeline worker on core %d (rc 0x%x), priority 0x3B (rc 0x%x)\n", core,
+                 static_cast<unsigned>(maskRc), static_cast<unsigned>(prioRc));
+}
+
+// The AX/DSP mix worker (runtime/src/hle/audio/ax_mix.cpp): the guest waits for it every audio
+// block. Prefers the lowest helper core (away from the pipeline worker), may move; priority 0x2D,
+// above every 0x3B helper and below the SDL output thread.
+extern "C" void SwitchConfigureAudioMixThread() {
+    const u64 helperMask = SwitchHelperCoreMask();
+    Result maskRc = 0;
+    int core = -1;
+    if (helperMask != 0) {
+        core = __builtin_ctzll(helperMask);
+        maskRc = svcSetThreadCoreMask(CUR_THREAD_HANDLE, core, helperMask);
+    }
+    const Result prioRc = svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2D);
+    std::fprintf(stderr, "[switch] AX mix worker prefers core %d (rc 0x%x), priority 0x2D (rc 0x%x)\n", core,
+                 static_cast<unsigned>(maskRc), static_cast<unsigned>(prioRc));
+}
+
+// SDL's audio device thread (runtime/src/audio_backend.cpp, postmix callback). It only copies a
+// mixed buffer to audout but must never miss its turn, or audout's queue runs dry (DriftDroid
+// measured that stutter). Highest helper priority.
+extern "C" void SwitchRaiseAudioOutputThread() {
+    const Result rc = svcSetThreadPriority(CUR_THREAD_HANDLE, 0x2B);
+    std::fprintf(stderr, "[switch] SDL audio output thread priority 0x2B (rc 0x%x, core %u)\n",
+                 static_cast<unsigned>(rc), svcGetCurrentProcessorNumber());
 }
 
 // libnx implements no thread detach: newlib's pthread_detach returns ENOSYS when the weak
@@ -300,6 +392,15 @@ void EarlyInit() noexcept {
     std::fprintf(stderr, "[switch] applet type: %s, process memory: %llu MiB, module base 0x%llx, core %u\n",
                  AppletTypeName(appletGetAppletType()), static_cast<unsigned long long>(totalMemory >> 20),
                  static_cast<unsigned long long>(SwitchModuleBase()), svcGetCurrentProcessorNumber());
+    // EarlyInit runs on the thread that becomes the guest thread (RuntimeMain); helpers created
+    // from here on are steered off this core (SwitchSpreadHelperThread).
+    g_switchGuestCore.store(static_cast<int>(svcGetCurrentProcessorNumber()), std::memory_order_relaxed);
+    {
+        u64 coreMask = 0;
+        svcGetInfo(&coreMask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0);
+        std::fprintf(stderr, "[switch] guest core %d, process core mask 0x%llx\n",
+                     g_switchGuestCore.load(std::memory_order_relaxed), static_cast<unsigned long long>(coreMask));
+    }
     std::fprintf(stderr, "[switch] data folder %s, game folder %s\n", kDataDirectory, kGameDirectory);
     std::fprintf(stderr, "[switch] nxlink stdio: %s\n", g_nxlinkSocket >= 0 ? "connected" : "off");
     // Horizon has no environment for a launch; sdmc:/switch/nsmbw/gfx_flags.txt stands in for

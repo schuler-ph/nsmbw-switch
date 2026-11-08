@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <ctime>
@@ -59,6 +60,26 @@ static std::atomic<uint64_t> g_hitBytes{0};
 static std::vector<XXH128_hash_t> g_pendingTouches;
 
 static int64_t days_now() { return static_cast<int64_t>(std::time(nullptr) / 86400); }
+
+// Every Dawn cache key starts with the device key: kDawnVersion (20 bytes, the Dawn git hash, not
+// changed by local patches) and a SHA3-224 over adapter info, enabled features, enabled toggles and
+// the cache descriptor (DeviceBase::DeviceBase). Logging that 48-byte prefix once per run tells
+// whether two runs can share blobs at all: a toggle change (for example `validate` dropping
+// skip_validation) gives a new prefix and misses every entry. Caller holds cache_mutex.
+static void log_device_key_prefix(void const* key, size_t keySize) {
+  static bool logged = false;
+  if (logged) {
+    return;
+  }
+  logged = true;
+  constexpr size_t PrefixSize = 48;
+  const auto* bytes = static_cast<const uint8_t*>(key);
+  std::string hex;
+  for (size_t i = 0; i < std::min(keySize, PrefixSize); ++i) {
+    hex += fmt::format("{:02x}", bytes[i]);
+  }
+  Log.info("Dawn cache device key prefix {} (first key {} bytes)", hex, keySize);
+}
 
 static void init_abort() {
   cache_broken = true;
@@ -287,6 +308,7 @@ size_t load_from_cache(void const* key, size_t keySize, void* value, size_t valu
     g_lookups.fetch_add(1, std::memory_order_relaxed);
   }
 
+  log_device_key_prefix(key, keySize);
   const auto keyHash = XXH128(key, keySize, 0);
   check(sqlite3_bind_blob(load_stmt, 1, &keyHash, sizeof(keyHash), SQLITE_TRANSIENT));
 

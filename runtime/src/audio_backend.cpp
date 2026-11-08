@@ -7,7 +7,12 @@
 #include <cstdlib>
 #include <iostream>
 
+#include <SDL3/SDL_audio.h>
 #include <SDL3/SDL_init.h>
+
+#if defined(__SWITCH__)
+extern "C" void SwitchRaiseAudioOutputThread();  // src/platform/switch/switch_platform.cpp
+#endif
 
 AudioBackend& AudioBackend::Instance() {
     static AudioBackend instance;
@@ -79,6 +84,23 @@ bool AudioBackend::EnsureInitializedLocked(uint32_t sampleRate, uint32_t channel
         SDL_DestroyAudioStream(stream);
         return false;
     }
+
+#if defined(__SWITCH__)
+    // SDL's device thread keeps audout's buffer queue topped up. As a plain std::thread it runs at
+    // libnx's time-sliced 0x3B, level with aurora's pipeline compiler; SDL's thread-priority hint
+    // is a no-op on Switch, so raise it from the postmix callback, which SDL invokes on that very
+    // thread (after DriftDroid's runtime/src/audio_backend.cpp). The samples stay untouched.
+    SDL_SetAudioPostmixCallback(
+        SDL_GetAudioStreamDevice(stream),
+        [](void*, const SDL_AudioSpec*, float*, int) {
+            static thread_local bool raised = false;
+            if (!raised) {
+                raised = true;
+                SwitchRaiseAudioOutputThread();
+            }
+        },
+        nullptr);
+#endif
 
     if (!SDL_SetAudioStreamGain(stream, EffectiveGainLocked())) {
         RT_LOG(RT_TAG_AUDIO) << "SDL_SetAudioStreamGain failed: " << SDL_GetError() << std::endl;

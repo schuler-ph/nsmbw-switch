@@ -23,6 +23,15 @@
 #include <fmt/format.h>
 #include <tracy/Tracy.hpp>
 
+#if defined(__SWITCH__)
+extern "C" void SwitchConfigurePipelineWorkerThread() __attribute__((weak));
+#endif
+
+namespace aurora::gx {
+extern std::atomic<uint64_t> g_shaderModuleBuildNs; // gx/pipeline.cpp
+extern std::atomic<uint64_t> g_shaderModuleBuilds;
+} // namespace aurora::gx
+
 namespace aurora::gfx {
 static Module Log("aurora::gfx::pipeline_cache");
 
@@ -65,7 +74,14 @@ constexpr size_t MaxQueuedPipelineBuilds = 256;
 // First-use compilation works best as a short parallel burst. Leave two logical processors for the
 // render and game threads, and cap large hosts to limit driver submissions and memory use.
 constexpr size_t ReservedLogicalProcessors = 2;
+#if defined(__SWITCH__)
+// Three usable A57 cores: the guest thread owns one, the frame/presentation workers and audio share
+// the others. One compiler thread, at the lowest priority, on one helper core
+// (SwitchConfigurePipelineWorkerThread in the runtime); uam serialises compilation anyway.
+constexpr size_t MaxPipelineWorkers = 1;
+#else
 constexpr size_t MaxPipelineWorkers = 22;
+#endif
 // Cached clear and GX pipelines are prewarmed using the full worker pool.
 constexpr size_t MaxBackgroundPipelineWorkers = MaxPipelineWorkers;
 // For synchronous pipeline fallback (OpenGL)
@@ -972,8 +988,64 @@ static void note_pipeline_queue_drained() {
            static_cast<double>(stats.hitBytes) / (1024.0 * 1024.0));
 }
 
+// Per-pipeline cost split for the boot prewarm, logged every PrewarmProfileInterval pipelines:
+// a pipeline whose Dawn blob lookups all hit skipped Tint lowering, GLSL generation and uam; one
+// with a miss paid for them. Shader module creation (WGSL generation plus Tint parse and resolve)
+// is uncached and reported separately. Exact with one compiler thread (the Switch); with several
+// the blob deltas of concurrent compiles mix.
+constexpr uint32_t PrewarmProfileInterval = 100;
+struct PrewarmProfile {
+  std::mutex mutex;
+  uint32_t pipelines = 0;
+  uint32_t hitOnly = 0;
+  uint32_t withMiss = 0;
+  double hitOnlyMs = 0.0;
+  double withMissMs = 0.0;
+  double maxMs = 0.0;
+};
+static PrewarmProfile g_prewarmProfile;
+
+static void note_compiled_pipeline(double ms, uint64_t lookups, uint64_t hits) {
+  if (!g_prewarmActive.load(std::memory_order_acquire)) {
+    return;
+  }
+  std::lock_guard lock{g_prewarmProfile.mutex};
+  auto& p = g_prewarmProfile;
+  ++p.pipelines;
+  if (lookups == hits) {
+    ++p.hitOnly;
+    p.hitOnlyMs += ms;
+  } else {
+    ++p.withMiss;
+    p.withMissMs += ms;
+  }
+  p.maxMs = std::max(p.maxMs, ms);
+  if (p.pipelines % PrewarmProfileInterval != 0) {
+    return;
+  }
+  const auto elapsed =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - g_prewarmStart).count();
+  const auto stats = webgpu::blob_cache_stats();
+  const auto moduleNs = gx::g_shaderModuleBuildNs.load(std::memory_order_relaxed);
+  const auto modules = gx::g_shaderModuleBuilds.load(std::memory_order_relaxed);
+  Log.info("Prewarm progress: {} pipelines in {:.1f} s; all-hit {} (avg {:.1f} ms), with miss {} (avg {:.1f} ms), "
+           "max {:.1f} ms; shader modules {} (avg {:.1f} ms); Dawn blob cache {}/{} hits, {} stores",
+           p.pipelines, elapsed, p.hitOnly, p.hitOnly ? p.hitOnlyMs / p.hitOnly : 0.0, p.withMiss,
+           p.withMiss ? p.withMissMs / p.withMiss : 0.0, p.maxMs, modules,
+           modules ? static_cast<double>(moduleNs) / 1e6 / static_cast<double>(modules) : 0.0, stats.hits,
+           stats.lookups, stats.stores);
+  p.maxMs = 0.0;
+}
+
 static void compile_pending_pipeline(PendingPipeline pending) {
+  const auto before = webgpu::blob_cache_stats();
+  const auto start = std::chrono::steady_clock::now();
   auto result = pending.create();
+  {
+    const auto after = webgpu::blob_cache_stats();
+    note_compiled_pipeline(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+                           after.lookups - before.lookups, after.hits - before.hits);
+  }
   {
     std::lock_guard lock{g_pipelineMutex};
     const auto [_, inserted] = g_pipelines.try_emplace(pending.hash, CachedPipeline{
@@ -995,6 +1067,12 @@ static void compile_pending_pipeline(PendingPipeline pending) {
 static void pipeline_worker() {
 #ifdef TRACY_ENABLE
   tracy::SetThreadName("Pipeline compilation thread");
+#endif
+#if defined(__SWITCH__)
+  // Core and priority placement lives in the runtime (src/platform/switch/switch_platform.cpp).
+  if (SwitchConfigurePipelineWorkerThread != nullptr) {
+    SwitchConfigurePipelineWorkerThread();
+  }
 #endif
 
   while (true) {

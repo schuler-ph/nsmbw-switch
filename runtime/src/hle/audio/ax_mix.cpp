@@ -33,6 +33,10 @@
 #include <sched.h>
 #endif
 
+#if defined(__SWITCH__)
+extern "C" void SwitchConfigureAudioMixThread();  // src/platform/switch/switch_platform.cpp
+#endif
+
 namespace AxDspHle {
 namespace {
 // NSMBW_LOG_FPS: the mix worker's time mixing, the guest's time waiting for it, and its last CPU.
@@ -1522,6 +1526,10 @@ private:
 
     void MixWorkerMain() {
         t_onMixWorker = true;
+#if defined(__SWITCH__)
+        // Off the guest core, above the pipeline compiler (src/platform/switch/switch_platform.cpp).
+        SwitchConfigureAudioMixThread();
+#endif
         for (;;) {
             {
                 std::unique_lock<std::mutex> lock(m_mixMutex);

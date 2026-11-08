@@ -5,6 +5,8 @@
 #include "shader_info.hpp"
 #include "tracy/Tracy.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -13,6 +15,11 @@
 
 namespace aurora::gx {
 static Module Log("aurora::gx");
+
+// Prewarm telemetry (gfx/pipeline_cache.cpp): time spent generating WGSL and creating Dawn shader
+// modules (Tint parse and resolve), which the Dawn blob cache does not cover.
+std::atomic<uint64_t> g_shaderModuleBuildNs{0};
+std::atomic<uint64_t> g_shaderModuleBuilds{0};
 
 namespace {
 struct ShaderConfigHash {
@@ -43,7 +50,13 @@ wgpu::ShaderModule cached_shader_module(const ShaderConfig& config) {
     }
   }
 
+  const auto buildStart = std::chrono::steady_clock::now();
   auto module = build_shader(config);
+  g_shaderModuleBuildNs.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                            std::chrono::steady_clock::now() - buildStart)
+                                                            .count()),
+                                  std::memory_order_relaxed);
+  g_shaderModuleBuilds.fetch_add(1, std::memory_order_relaxed);
   {
     std::lock_guard lock{sShaderModuleCacheMutex};
     entry->module = module;
