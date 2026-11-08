@@ -213,6 +213,14 @@ void flush_async() {
   }
 }
 
+bool copy_src_nosync() {
+  static const bool on = [] {
+    const char* value = std::getenv("NSMBW_GX_COPYSRC_NOSYNC");
+    return value != nullptr && value[0] == '1';
+  }();
+  return on;
+}
+
 void sync_if_threaded() {
   if (!threaded()) {
     return;

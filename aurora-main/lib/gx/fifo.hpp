@@ -91,6 +91,8 @@ bool threaded();
 void flush_async();
 // Waits for the worker to finish everything queued (threaded only; a no-op otherwise).
 void sync_if_threaded();
+// NSMBW_GX_COPYSRC_NOSYNC=1: GXSetTexCopySrc sets its producer-owned state without a sync.
+bool copy_src_nosync();
 
 // AuroraBeginCommandDigest: while on, process() and texture copies fold what they see into the digest.
 extern bool g_commandDigestOn;
