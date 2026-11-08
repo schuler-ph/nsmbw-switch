@@ -17,6 +17,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(__SWITCH__)
+#include <malloc.h>
+#endif
+
 #include <SDL3/SDL_iostream.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
@@ -1034,6 +1038,12 @@ static void note_compiled_pipeline(double ms, uint64_t lookups, uint64_t hits) {
            p.withMiss ? p.withMissMs / p.withMiss : 0.0, p.maxMs, modules,
            modules ? static_cast<double>(moduleNs) / 1e6 / static_cast<double>(modules) : 0.0, stats.hits,
            stats.lookups, stats.stores);
+#if defined(__SWITCH__)
+  // Run 15a died of std::bad_alloc in Tint's resolver at pipeline ~1700: show heap growth.
+  const struct mallinfo heap = mallinfo();
+  Log.info("Prewarm memory: heap in use {:.1f} MiB of {:.1f} MiB arena", heap.uordblks / 1048576.0,
+           heap.arena / 1048576.0);
+#endif
   p.maxMs = 0.0;
 }
 
