@@ -37,7 +37,6 @@
 
 extern "C" {
 extern int __system_argc;
-extern "C" bool AuroraSwitchAppletClosing();  // aurora-main/lib/window.cpp
 extern char** __system_argv;
 }
 
@@ -149,21 +148,6 @@ void SwitchSpreadHelperThread(Handle handle) noexcept {
 // This definition must exist whenever the link option does, or every std::thread fails (ENOSYS).
 extern "C" int __real___syscall_thread_create(void** thread, void* entry, void* arg, void* stackAddr,
                                               size_t stackSize);
-// Every thread the program starts (and the main thread, from EarlyInit), so that a return to
-// hbloader can pause them first (SwitchPlatform::ExitProgram). Handles of threads that ended stay
-// in the table; pausing one then just fails.
-namespace {
-constexpr size_t kMaxTrackedThreads = 512;
-Handle g_threadHandles[kMaxTrackedThreads];
-std::atomic<size_t> g_threadHandleCount{0};
-void TrackThread(Handle handle) {
-    const size_t slot = g_threadHandleCount.fetch_add(1, std::memory_order_acq_rel);
-    if (slot < kMaxTrackedThreads) {
-        g_threadHandles[slot] = handle;
-    }
-}
-} // namespace
-
 extern "C" int __wrap___syscall_thread_create(void** thread, void* entry, void* arg, void* stackAddr,
                                               size_t stackSize) {
     constexpr size_t kMinimumThreadStack = 2u * 1024u * 1024u;
@@ -176,7 +160,6 @@ extern "C" int __wrap___syscall_thread_create(void** thread, void* entry, void* 
         // loads that first word and hands it to svcSetThreadCoreMask). The thread is already
         // running, so the new placement applies from its next scheduling point.
         SwitchSpreadHelperThread(*static_cast<const Handle*>(*thread));
-        TrackThread(*static_cast<const Handle*>(*thread));
     }
     return result;
 }
@@ -410,7 +393,6 @@ bool InAppletMode() noexcept {
 }
 
 void EarlyInit() noexcept {
-    TrackThread(threadGetCurHandle());
     mkdir("sdmc:/switch", 0777);
     mkdir(kDataDirectory, 0777);
     StartLogTee();
@@ -497,46 +479,16 @@ void EarlyInit() noexcept {
     DevLink::Start();
 }
 
-bool ChainToLauncher() noexcept {
-    static constexpr char kLauncher[] = "sdmc:/switch/nsmbw-launcher/launcher.nro";
-    struct stat info {};
-    if (!envHasNextLoad() || stat(kLauncher, &info) != 0) {
-        return false;
-    }
-    // argv[0] is the program's own path, quoted as hbloader expects.
-    if (R_FAILED(envSetNextLoad(kLauncher, "\"sdmc:/switch/nsmbw-launcher/launcher.nro\""))) {
-        return false;
-    }
-    std::fprintf(stderr, "[switch] returning to %s\n", kLauncher);
-    return true;
-}
-
 [[noreturn]] void ExitProgram(int code) noexcept {
     std::fflush(stdout);
     std::fflush(stderr);
-    // HOME -> Close: the system ends the process anyway. NSMBW_NO_LAUNCHER=1: back to the HOME
-    // menu the hard way, like the crash handler.
-    const char* noLauncher = std::getenv("NSMBW_NO_LAUNCHER");
-    if (AuroraSwitchAppletClosing() || (noLauncher != nullptr && *noLauncher == '1')) {
-        std::fprintf(stderr, "[switch] ending the process (code %d)\n", code);
-        svcExitProcess();
-    }
-    // Back to hbloader, which starts the launcher (or hbmenu). It unmaps this program's code while
-    // its other threads would still run (run 17: the pipeline worker inside libuam's GLSL compiler
-    // faulted in the unmapped text), so pause every one of them first. The kernel returns from
-    // SetThreadActivity only once the thread is off every core.
-    const bool launcher = ChainToLauncher();
-    const Handle self = threadGetCurHandle();
-    const size_t count = std::min(g_threadHandleCount.load(std::memory_order_acquire), kMaxTrackedThreads);
-    unsigned paused = 0;
-    for (size_t i = 0; i < count; ++i) {
-        if (g_threadHandles[i] != self && R_SUCCEEDED(svcSetThreadActivity(g_threadHandles[i], ThreadActivity_Paused))) {
-            ++paused;
-        }
-    }
-    std::fprintf(stderr, "[switch] paused %u other threads; returning to hbloader (%s, code %d)\n", paused,
-                 launcher ? "launcher next" : "hbmenu next", code);
-    std::_Exit(code);
+    // Always the whole process, back to the HOME menu, as HOME -> Close does. Returning to hbloader
+    // (and from there to a launcher) is not safe: with the program's threads still running,
+    // hbloader unmaps their code (run 17: the pipeline worker faulted inside libuam's compiler);
+    // with them paused, a thread stopped inside a socket call took the system's bsdsocket service
+    // down when the process ended later (run 18, error 2162-0002 in 0100000000000012).
+    std::fprintf(stderr, "[switch] ending the process (code %d)\n", code);
+    svcExitProcess();
 }
 
 void ShowConsoleMessage(const std::string& text) noexcept {

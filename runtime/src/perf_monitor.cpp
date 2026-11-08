@@ -3,6 +3,7 @@
 
 #include "aurora_events.h"
 #include "runtime_log.h"
+#include "settings_overlay.h"
 #include "wii_remote_input.h"
 
 #include <aurora/aurora.h>
@@ -239,11 +240,23 @@ double EnvNumber(const char* name) {
     return value != nullptr && *value != '\0' ? std::strtod(value, nullptr) : 0.0;
 }
 
-void CheckExitLimits(Clock::time_point now) {
+// NSMBW_EXIT_AFTER_S counts play time: from the first frame with no shader left to compile and the
+// startup screen gone. The loading screen presents frames too, and a run that ended while the
+// cache was still filling never got its shaders compiled (run 18 plan).
+Clock::time_point g_playStart{};
+
+void CheckExitLimits(Clock::time_point now, uint32_t frame) {
     if (g_exitPending.load(std::memory_order_acquire)) return;
     static const double exitAfterS = EnvNumber("NSMBW_EXIT_AFTER_S");
     static const double exitAfterScriptMs = EnvNumber("NSMBW_EXIT_AFTER_SCRIPT");
-    if (exitAfterS > 0 && std::chrono::duration<double>(now - g_firstFrame).count() >= exitAfterS) {
+    if (exitAfterS > 0 && g_playStart == Clock::time_point{} && aurora_get_queued_pipeline_count() == 0 &&
+        !settings_overlay::StartupScreenVisible()) {
+        g_playStart = now;
+        RT_LOGF(RT_TAG_RUNTIME, "perf: shaders ready at frame %u after %.1f s; NSMBW_EXIT_AFTER_S=%.0f counts from here\n",
+                frame, std::chrono::duration<double>(now - g_firstFrame).count(), exitAfterS);
+    }
+    if (exitAfterS > 0 && g_playStart != Clock::time_point{} &&
+        std::chrono::duration<double>(now - g_playStart).count() >= exitAfterS) {
         RequestExit("NSMBW_EXIT_AFTER_S reached");
     } else if (exitAfterScriptMs > 0 && WiiRemoteInput::ScriptFinished(static_cast<uint64_t>(exitAfterScriptMs))) {
         RequestExit("input script finished (NSMBW_EXIT_AFTER_SCRIPT)");
@@ -298,7 +311,7 @@ void OnFrame(const DevLink::FrameSample& sample) noexcept {
     if (now - w.start >= std::chrono::seconds(1)) {
         CloseWindow(now, sample);
     }
-    CheckExitLimits(now);
+    CheckExitLimits(now, sample.frame);
 #if !defined(__SWITCH__)
     if (g_exitPending.load(std::memory_order_acquire)) {
         ExitForAuroraWindowClose();
@@ -399,8 +412,7 @@ void RequestExit(const char* reason) noexcept {
     RT_LOGF(RT_TAG_RUNTIME, "perf: ending the program: %s\n", reason);
     LogRunSummary(reason);
 #if defined(__SWITCH__)
-    // Lets the dev link send what is queued, then ends like HOME -> Close (and returns to the
-    // launcher when there is one, SwitchPlatform::ChainToLauncher).
+    // Lets the dev link send what is queued, then ends the process (SwitchPlatform::ExitProgram).
     DevLink::RequestQuit();
 #endif
 }
