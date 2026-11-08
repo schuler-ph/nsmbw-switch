@@ -104,7 +104,22 @@ static void process_buffer(const uint8_t* data, uint32_t size) {
 // NSMBW: the GX thread (see threaded()). Buffers of commands are decoded on it in the order the
 // game thread queued them; the game thread waits for it only where it needs decoded state.
 namespace {
-constexpr uint32_t kHandOffBytes = 16 * 1024;  // queue a buffer once this much has built up
+// Queue a buffer once this much has built up. 16 KiB by default; NSMBW_GX_HANDOFF_KB=<n> picks
+// another size (smaller: the GX thread gets its work earlier and the tail a drain waits for is
+// shorter, at the cost of more hand-offs per frame).
+uint32_t hand_off_bytes() {
+  static const uint32_t bytes = [] {
+    const char* value = std::getenv("NSMBW_GX_HANDOFF_KB");
+    if (value != nullptr && value[0] != '\0') {
+      const long kib = std::strtol(value, nullptr, 10);
+      if (kib >= 1 && kib <= 4096) {
+        return static_cast<uint32_t>(kib) * 1024u;
+      }
+    }
+    return 16u * 1024u;
+  }();
+  return bytes;
+}
 
 struct GxThread {
   std::thread thread;
@@ -193,7 +208,7 @@ void flush_async() {
     drain();
     return;
   }
-  if (detail::sBufferSize >= kHandOffBytes) {
+  if (detail::sBufferSize >= hand_off_bytes()) {
     hand_off();
   }
 }
