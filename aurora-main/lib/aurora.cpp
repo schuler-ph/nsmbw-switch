@@ -1903,7 +1903,8 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
 #ifdef __ANDROID__
     static const bool serialEncode = std::getenv("NSMBW_SERIAL_ENCODE") != nullptr;
 #else
-    static const bool serialEncode = std::getenv("NSMBW_OVERLAP_ENCODE") == nullptr;
+    static const bool serialEncode =
+        std::getenv("NSMBW_OVERLAP_ENCODE") == nullptr && !gx::fifo::handoff_option("overlap");
 #endif
     overlapEncode = ctx.interpolationActive || !serialEncode;
     if (!overlapEncode) {
