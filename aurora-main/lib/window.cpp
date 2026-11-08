@@ -69,8 +69,6 @@ std::atomic_bool g_backgrounded = false;
 #if defined(__SWITCH__)
 // Set from pump_events() when Horizon asks the program to quit; turned into an AURORA_EXIT event.
 std::atomic_bool g_appletExitRequested = false;
-// Set only when Horizon itself asked (HOME -> Close), not for AuroraSwitchRequestExit.
-std::atomic_bool g_appletClosing = false;
 #endif
 std::atomic_bool g_nativeResizePending = false;
 // A move, resize or display mode change this file asked for that SDL_SyncWindow has not waited
@@ -703,8 +701,7 @@ void pump_events() noexcept {
   // SDL's offscreen driver never talks to the applet layer, so nothing else answers Horizon's
   // messages (sleep, wake, focus, docked/handheld). An unanswered sleep request crashes the
   // system's operation-mode manager, taking the console down with it.
-  if (!appletMainLoop() && !g_appletClosing.exchange(true, std::memory_order_acq_rel)) {
-    g_appletExitRequested.store(true, std::memory_order_release);
+  if (!appletMainLoop() && !g_appletExitRequested.exchange(true, std::memory_order_acq_rel)) {
     Log.info("applet requested exit");
     // The process is ended from outside after this (no atexit), so restore the controllers here.
     AuroraSwitchRestoreControllers();
@@ -986,10 +983,6 @@ void set_background_input(bool value) { SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACK
 #if defined(__SWITCH__)
 // The runtime's development link ("quit", runtime/src/platform/switch/dev_link.cpp): end the
 // program the way closing it from the HOME menu does, through the next AURORA_EXIT event.
-extern "C" bool AuroraSwitchAppletClosing() {
-  return aurora::window::g_appletClosing.load(std::memory_order_acquire);
-}
-
 extern "C" void AuroraSwitchRequestExit() {
   if (!aurora::window::g_appletExitRequested.exchange(true, std::memory_order_acq_rel)) {
     AuroraSwitchRestoreControllers();

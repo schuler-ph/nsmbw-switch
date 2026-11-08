@@ -41,14 +41,8 @@ void ShowConsoleMessage(const std::string& text) noexcept;
 // Shows `text` in the system's error dialog (works while aurora owns the screen). Logged as well.
 void ShowErrorDialog(const std::string& shortText, const std::string& longText) noexcept;
 
-// When sdmc:/switch/nsmbw-launcher/launcher.nro exists, asks hbloader to start it after this
-// program ends (true when set), so test runs loop through the launcher.
-bool ChainToLauncher() noexcept;
-
-// Every runtime-initiated exit (ExitForAuroraWindowClose, TerminateNow). After HOME -> Close, or
-// with NSMBW_NO_LAUNCHER=1, it ends the process (back to the HOME menu). Otherwise it pauses every
-// other thread, sets the launcher as the next program when there is one, and returns to hbloader:
-// returning with threads still running faults in the unmapped program text (run 17).
+// Every runtime-initiated exit (ExitForAuroraWindowClose, TerminateNow): ends the whole process
+// with svcExitProcess, back to the HOME menu. Never returns to hbloader (runs 17 and 18).
 [[noreturn]] void ExitProgram(int code) noexcept;
 
 // Ends the process at once, without atexit handlers or static destructors (other threads such as

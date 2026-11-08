@@ -15,8 +15,9 @@
 // sent to the PC as the development link's "S" record, and logged as a per-scene table when the
 // program ends through the runtime ("[perf] scene ..." lines).
 //
-// Self-ending test runs: NSMBW_EXIT_AFTER_S=<seconds> ends the program that long after the first
-// presented frame, NSMBW_EXIT_AFTER_SCRIPT=<ms> that long after NSMBW_INPUT_SCRIPT's last event.
+// Self-ending test runs: NSMBW_EXIT_AFTER_S=<seconds> ends the program after that much play time,
+// counted from the first frame with no shader queued and the startup screen gone (not from start);
+// NSMBW_EXIT_AFTER_SCRIPT=<ms> ends it that long after NSMBW_INPUT_SCRIPT's last event.
 
 #include <cstdint>
 
@@ -35,8 +36,8 @@ void SetOverlay(bool on) noexcept;
 bool Overlay() noexcept;
 // Logs the per-scene table now ("[perf] ..." on stderr); also done before a runtime-initiated exit.
 void LogRunSummary(const char* reason) noexcept;
-// Ends the program the way closing it does, after logging the summary (the dev link's "quit",
-// the NSMBW_EXIT_AFTER_* limits).
+// Ends the program (on the Switch: the whole process, back to the HOME menu) after logging the
+// summary (the dev link's "quit", the NSMBW_EXIT_AFTER_* limits).
 void RequestExit(const char* reason) noexcept;
 
 } // namespace PerfMonitor
