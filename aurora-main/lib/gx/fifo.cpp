@@ -17,8 +17,28 @@
 #include "tracy/Tracy.hpp"
 #include <aurora/aurora.h>
 
+#if defined(__SWITCH__)
+#include <switch.h>
+#endif
+
 namespace aurora::gx::fifo {
 static Module Log("aurora::gx::fifo");
+
+// Cores this process may run on. libnx's std::thread::hardware_concurrency() is 0 (no
+// sysconf(_SC_NPROCESSORS_ONLN)), so on the Switch the kernel's core mask for the process is
+// counted instead: homebrew gets cores 0-2 (mask 0x7), core 3 stays with the system.
+static unsigned usable_cores() {
+  unsigned cores = std::thread::hardware_concurrency();
+#if defined(__SWITCH__)
+  if (cores == 0) {
+    u64 mask = 0;
+    cores = R_SUCCEEDED(svcGetInfo(&mask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0)) && mask != 0
+                ? static_cast<unsigned>(__builtin_popcountll(mask))
+                : 3u;
+  }
+#endif
+  return cores;
+}
 
 namespace detail {
 uint8_t* sBufferData = nullptr;
@@ -166,7 +186,7 @@ GxThread& gx_thread() {
       }
     });
     state->thread.detach();
-    Log.info("GX thread started ({} hardware threads)", std::thread::hardware_concurrency());
+    Log.info("GX thread started ({} usable cores)", usable_cores());
     return state;
   }();
   return *t;
@@ -202,7 +222,14 @@ bool threaded() {
     if (value != nullptr && value[0] != '\0') {
       return value[0] == '1';
     }
-    return std::thread::hardware_concurrency() >= 4;
+#if defined(__SWITCH__)
+    // Switch: on with the 3 cores homebrew gets. Measured on the hardware (A/B 2026-11-08, same
+    // build and clock): title demo 29.8 -> 38.0 FPS, level 45.3 -> 46.2 FPS; the game thread
+    // otherwise decodes every GX command itself. Any core besides the guest's is enough.
+    return usable_cores() >= 2;
+#else
+    return usable_cores() >= 4;
+#endif
   }();
   // Never on OpenGL (ES): its context belongs to one thread, so that renderer runs single-threaded.
   // Off until the renderer is up, too; turning on later is safe, as nothing is left queued then.
