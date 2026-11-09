@@ -244,6 +244,11 @@ bool copy_src_nosync() {
   return on;
 }
 
+bool no_sealed_wait() {
+  static const bool on = handoff_option("nosealed");
+  return on;
+}
+
 void sync_if_threaded() {
   if (!threaded()) {
     return;

@@ -268,6 +268,38 @@ struct FrameWorkerState {
 
 FrameWorkerState g_frameWorker;
 
+// NSMBW: where a frame-worker cycle spends its time, summed over cycles and logged every
+// kFrameWorkerLogCycles cycles (record_frame_telemetry). Seal and prepare run on the worker, or on
+// the producer with NSMBW_GX_HANDOFF=nosealed; waitBegin is the worker waiting for the producer's
+// begin_frame() before it may prepare (worker path only).
+struct FrameWorkerStats {
+  std::atomic<uint64_t> cycles{0};
+  std::atomic<uint64_t> sealNanos{0};
+  std::atomic<uint64_t> encodeNanos{0};
+  std::atomic<uint64_t> publishNanos{0};
+  std::atomic<uint64_t> waitBeginNanos{0};
+  std::atomic<uint64_t> prepareNanos{0};
+  std::atomic<uint64_t> producerNanos{0};  // nosealed: seal + prepare inside aurora_end_frame
+};
+FrameWorkerStats g_frameWorkerStats;
+constexpr uint64_t kFrameWorkerLogCycles = 300;
+
+inline uint64_t nanos_between(std::chrono::steady_clock::time_point from,
+                              std::chrono::steady_clock::time_point to) noexcept {
+  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(to - from).count());
+}
+
+// NSMBW_GX_HANDOFF=nosealed: the producer seals and prepares inside end_frame(); the worker only
+// encodes and presents (see gx::fifo::no_sealed_wait()). Only with the frame worker.
+bool no_sealed_mode() noexcept {
+#ifdef AURORA_ENABLE_GX
+  static const bool on = gx::fifo::no_sealed_wait();
+  return on;
+#else
+  return false;
+#endif
+}
+
 bool gl_single_thread() noexcept {
   return webgpu::g_backendType == wgpu::BackendType::OpenGL || webgpu::g_backendType == wgpu::BackendType::OpenGLES;
 }
@@ -316,6 +348,9 @@ bool frame_worker_requested() noexcept {
 #ifdef AURORA_ENABLE_GX
 // Returns false when a stop request was observed mid-cycle.
 bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept;
+// NSMBW nosealed: encode and present what end_frame() sealed on the producer.
+bool run_frame_worker_cycle_nosealed() noexcept;
+void reset_no_sealed_handoff() noexcept;
 #endif
 
 void frame_worker_main() noexcept {
@@ -348,7 +383,11 @@ void frame_worker_main() noexcept {
     // The CPU already decoded the sealed frame at its GX boundary; the worker only owns
     // encode/submit/present, so it never touches the producer's next FIFO buffer.
 #ifdef AURORA_ENABLE_GX
-    if (!run_frame_worker_cycle(sealedFrame)) {
+    if (no_sealed_mode()) {
+      if (!run_frame_worker_cycle_nosealed()) {
+        break;
+      }
+    } else if (!run_frame_worker_cycle(sealedFrame)) {
       break;
     }
 #endif
@@ -438,6 +477,9 @@ void stop_frame_worker() noexcept {
   if (g_frameWorker.thread.joinable()) {
     g_frameWorker.thread.join();
   }
+#ifdef AURORA_ENABLE_GX
+  reset_no_sealed_handoff();
+#endif
   std::lock_guard lock(g_frameWorker.mutex);
   g_frameWorker.started = false;
   g_frameWorker.threadId = {};
@@ -1622,6 +1664,25 @@ struct SealedFrameContext {
   bool metalfxEnabled = false;
 };
 
+// NSMBW nosealed: what the producer's end_frame() hands to the worker. Written by the producer
+// after the worker's DONE, read by the worker until its next DONE; never touched by both at once.
+struct NoSealedHandoff {
+  gfx::SealedFrame sealedFrame;
+  SealedFrameContext ctx;
+  bool imguiNewFrameOwed = false;
+};
+NoSealedHandoff& no_sealed_handoff() noexcept {
+  // Heap-allocated so that its Dawn objects never outlive the device through static destruction.
+  static NoSealedHandoff* handoff = new NoSealedHandoff();
+  return *handoff;
+}
+void reset_no_sealed_handoff() noexcept {
+  auto& handoff = no_sealed_handoff();
+  handoff.sealedFrame = gfx::SealedFrame();
+  handoff.ctx = SealedFrameContext();
+  handoff.imguiNewFrameOwed = false;
+}
+
 // Phase 1: everything that touches producer-shared renderer state. Needs g_rendererGpuMutex and
 // a FIFO already drained into the recorded pass list.
 void seal_frame_locked(gfx::SealedFrame& sealedFrame, SealedFrameContext& ctx) {
@@ -1833,7 +1894,39 @@ void publish_presentations(std::vector<PresentationJob>&& presentationJobs, bool
 #endif
 }
 
+// NSMBW: averages of the last kFrameWorkerLogCycles cycles, to the log. Worker thread only.
+void log_frame_worker_stats() {
+  const uint64_t cycles = g_frameWorkerStats.cycles.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (cycles % kFrameWorkerLogCycles != 0) {
+    return;
+  }
+  struct Snapshot {
+    uint64_t seal, encode, publish, waitBegin, prepare, producer, mapWait, mapFrames, begins;
+  };
+  static Snapshot s_last{};
+  Snapshot now{};
+  now.seal = g_frameWorkerStats.sealNanos.load(std::memory_order_relaxed);
+  now.encode = g_frameWorkerStats.encodeNanos.load(std::memory_order_relaxed);
+  now.publish = g_frameWorkerStats.publishNanos.load(std::memory_order_relaxed);
+  now.waitBegin = g_frameWorkerStats.waitBeginNanos.load(std::memory_order_relaxed);
+  now.prepare = g_frameWorkerStats.prepareNanos.load(std::memory_order_relaxed);
+  now.producer = g_frameWorkerStats.producerNanos.load(std::memory_order_relaxed);
+  gfx::staging_map_wait_stats(now.mapWait, now.mapFrames, now.begins);
+  const auto avgMs = [&](uint64_t nowValue, uint64_t lastValue) {
+    return static_cast<double>(nowValue - lastValue) / 1e6 / static_cast<double>(kFrameWorkerLogCycles);
+  };
+  Log.info("Frame worker ({}): {} cycles, avg ms seal {:.2f} encode {:.2f} publish {:.2f} wait-begin {:.2f} "
+           "prepare {:.2f}; producer end_frame {:.2f}; staging map wait {:.2f} ms avg in {} of {} frame begins",
+           no_sealed_mode() ? "nosealed" : "worker", cycles, avgMs(now.seal, s_last.seal),
+           avgMs(now.encode, s_last.encode), avgMs(now.publish, s_last.publish),
+           avgMs(now.waitBegin, s_last.waitBegin), avgMs(now.prepare, s_last.prepare),
+           avgMs(now.producer, s_last.producer), avgMs(now.mapWait, s_last.mapWait),
+           now.mapFrames - s_last.mapFrames, now.begins - s_last.begins);
+  s_last = now;
+}
+
 void record_frame_telemetry() {
+  log_frame_worker_stats();
   TracyPlotConfig("aurora: lastVertSize", tracy::PlotFormatType::Memory, false, true, 0);
   TracyPlotConfig("aurora: lastUniformSize", tracy::PlotFormatType::Memory, false, true, 0);
   TracyPlotConfig("aurora: lastIndexSize", tracy::PlotFormatType::Memory, false, true, 0);
@@ -1894,6 +1987,7 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     std::lock_guard gpuLock(g_rendererGpuMutex);
     seal_frame_locked(sealedFrame, ctx);
     sealed = WorkerClock::now();
+    g_frameWorkerStats.sealNanos.fetch_add(nanos_between(cycleStart, sealed), std::memory_order_relaxed);
     // NSMBW: overlap the encode with the producer's next frame without interpolation too. Encoding
     // and submitting in the SEALED phase made the producer's first drain of every frame (EGG's
     // GXDrawDone) wait out the whole encode: a quarter of the game thread's time on a Pixel 3 XL.
@@ -1911,11 +2005,13 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
       presentationJobs = encode_sealed_frame(sealedFrame, ctx);
     }
     encoded = WorkerClock::now();
+    g_frameWorkerStats.encodeNanos.fetch_add(nanos_between(sealed, encoded), std::memory_order_relaxed);
   }
   if (!overlapEncode) {
     publish_presentations(std::move(presentationJobs), ctx.interpolationActive);
   }
   const auto published = WorkerClock::now();
+  g_frameWorkerStats.publishNanos.fetch_add(nanos_between(encoded, published), std::memory_order_relaxed);
 
   {
     std::unique_lock lock(g_frameWorker.mutex);
@@ -1925,6 +2021,8 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     }
     g_frameWorker.prepareAllowed = false;
   }
+  g_frameWorkerStats.waitBeginNanos.fetch_add(nanos_between(published, WorkerClock::now()),
+                                              std::memory_order_relaxed);
 
   // Preparing the next frame belongs to the SEALED phase: without a fresh pass 0 and mapped
   // staging buffers the producer's drain has nowhere to put its commands.
@@ -1935,6 +2033,7 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
       &imguiNewFrameOwed);
   {
     const auto prepareEnd = WorkerClock::now();
+    g_frameWorkerStats.prepareNanos.fetch_add(nanos_between(prepareStart, prepareEnd), std::memory_order_relaxed);
     const auto msOf = [](WorkerClock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
     const double busy = msOf(published - cycleStart) + msOf(prepareEnd - prepareStart);
     static WorkerClock::time_point s_window{};
@@ -1964,8 +2063,13 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
   if (overlapEncode) {
     // Mutex-free: the producer drains and records the next frame in parallel, taking the renderer
     // mutex per drain, and this phase never takes it.
+    const auto encodeStart = WorkerClock::now();
     presentationJobs = encode_sealed_frame(sealedFrame, ctx);
+    const auto encodeEnd = WorkerClock::now();
+    g_frameWorkerStats.encodeNanos.fetch_add(nanos_between(encodeStart, encodeEnd), std::memory_order_relaxed);
     publish_presentations(std::move(presentationJobs), ctx.interpolationActive);
+    g_frameWorkerStats.publishNanos.fetch_add(nanos_between(encodeEnd, WorkerClock::now()),
+                                              std::memory_order_relaxed);
     if (imguiNewFrameOwed) {
       // Safe only now: every slot has replayed this frame's ImGui draw lists.
       std::lock_guard gpuLock(g_rendererGpuMutex);
@@ -1978,6 +2082,38 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
     g_frameWorker.cv.notify_all();
   }
 
+  record_frame_telemetry();
+  return true;
+}
+
+// NSMBW nosealed: one cycle on the worker. The producer has already sealed the frame into the
+// hand-off (seal_frame_locked) and prepared the next one, so this phase never takes the renderer
+// mutex for the frame's own state; the producer and the GX thread record the next frame meanwhile.
+// Only the deferred ImGui frame start touches shared state, under the renderer mutex, as the
+// overlapped encode of the worker path does.
+bool run_frame_worker_cycle_nosealed() noexcept {
+  ZoneScopedN("Frame worker cycle (nosealed)");
+  webgpu::fail_if_device_lost();
+  auto& handoff = no_sealed_handoff();
+  using WorkerClock = std::chrono::steady_clock;
+  const auto encodeStart = WorkerClock::now();
+  std::vector<PresentationJob> presentationJobs = encode_sealed_frame(handoff.sealedFrame, handoff.ctx);
+  const auto encodeEnd = WorkerClock::now();
+  g_frameWorkerStats.encodeNanos.fetch_add(nanos_between(encodeStart, encodeEnd), std::memory_order_relaxed);
+  publish_presentations(std::move(presentationJobs), handoff.ctx.interpolationActive);
+  g_frameWorkerStats.publishNanos.fetch_add(nanos_between(encodeEnd, WorkerClock::now()),
+                                            std::memory_order_relaxed);
+  if (handoff.imguiNewFrameOwed) {
+    // Safe only now: every slot has replayed this frame's ImGui draw lists.
+    std::lock_guard gpuLock(g_rendererGpuMutex);
+    imgui::new_frame(window::get_window_size());
+    handoff.imguiNewFrameOwed = false;
+  }
+  {
+    std::lock_guard lock(g_frameWorker.mutex);
+    g_frameWorker.ready.store(true, std::memory_order_release);
+  }
+  g_frameWorker.cv.notify_all();
   record_frame_telemetry();
   return true;
 }
@@ -2023,6 +2159,24 @@ bool begin_frame() noexcept {
   // SDL needs event pumping on the window-owning producer thread, and the worker passes
   // pumpEvents=false, so keep it here even when the fast path returns early.
   window::pump_events();
+#ifdef AURORA_ENABLE_GX
+  if (no_sealed_mode()) {
+    // end_frame() prepared this frame on this thread. If that failed (surface change, pause), try
+    // again here, once the worker is through with the previous frame (its ImGui draw lists and the
+    // deferred ImGui frame start).
+    {
+      std::lock_guard lock(g_frameWorker.mutex);
+      if (g_frameWorker.framePrepared) {
+        return true;
+      }
+    }
+    wait_for_frame_worker_private(FrameWorkerPhase::Done);
+    const bool prepared = begin_frame_impl(false);
+    std::lock_guard lock(g_frameWorker.mutex);
+    g_frameWorker.framePrepared = prepared;
+    return prepared;
+  }
+#endif
   bool waitForSurfacePreparation = false;
 #ifdef AURORA_ENABLE_GX
   // A surface mutation can legitimately fail preparation, and optimistic success would let GX/ImGui
@@ -2091,6 +2245,41 @@ void end_frame() {
   // Seal all current GX work on the CPU while the renderer is known ready.
   // Later FIFO writes belong exclusively to the next frame.
   gx::fifo::drain();
+#ifdef AURORA_ENABLE_GX
+  if (no_sealed_mode()) {
+    // NSMBW nosealed: seal here, on the producer, while the GX thread is idle after the drain, and
+    // prepare the next frame at once. The next frame's first hand-off then finds its staging set
+    // mapped and its pass 0 recorded; the worker only encodes and presents, so SEALED never drops
+    // and the GX thread never waits for it. The staging ring (three slots) is what keeps the
+    // producer's next frame apart from the slot the worker's encode still reads.
+    using ProducerClock = std::chrono::steady_clock;
+    const auto sealStart = ProducerClock::now();
+    auto& handoff = no_sealed_handoff();
+    {
+      std::lock_guard gpuLock(g_rendererGpuMutex);
+      seal_frame_locked(handoff.sealedFrame, handoff.ctx);
+    }
+    const auto sealEnd = ProducerClock::now();
+    g_frameWorkerStats.sealNanos.fetch_add(nanos_between(sealStart, sealEnd), std::memory_order_relaxed);
+    // Deferred: the worker starts the next ImGui frame once the encode has replayed this one's.
+    bool imguiNewFrameOwed = false;
+    const bool prepared = begin_frame_impl(false, ImGuiFramePolicy::Deferred, &imguiNewFrameOwed);
+    handoff.imguiNewFrameOwed = imguiNewFrameOwed;
+    const auto prepareEnd = ProducerClock::now();
+    g_frameWorkerStats.prepareNanos.fetch_add(nanos_between(sealEnd, prepareEnd), std::memory_order_relaxed);
+    g_frameWorkerStats.producerNanos.fetch_add(nanos_between(sealStart, prepareEnd), std::memory_order_relaxed);
+    {
+      std::lock_guard lock(g_frameWorker.mutex);
+      g_frameWorker.framePrepared = prepared;
+      g_frameWorker.sealed.store(true, std::memory_order_release);
+      g_frameWorker.ready.store(false, std::memory_order_release);
+      g_frameWorker.jobPending = true;
+      g_frameWorker.prepareAllowed = false;
+    }
+    g_frameWorker.cv.notify_one();
+    return;
+  }
+#endif
   {
     std::lock_guard lock(g_frameWorker.mutex);
     g_frameWorker.framePrepared = false;

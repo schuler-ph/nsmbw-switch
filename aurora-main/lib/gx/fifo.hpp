@@ -94,8 +94,15 @@ void sync_if_threaded();
 // NSMBW_GX_HANDOFF=<flag>[,<flag>...] tunes the hand-off to the GX thread (one variable, as the
 // Switch launcher passes at most 419 characters of arguments). Flags: kb<N> (hand-off threshold in
 // KiB, default 16), copysrc (GXSetTexCopySrc without a sync), drawdone (GXDrawDone hands off and
-// returns), overlap (frame worker encodes after SEALED, like NSMBW_OVERLAP_ENCODE=1).
+// returns), overlap (frame worker encodes after SEALED, like NSMBW_OVERLAP_ENCODE=1), nosealed (the
+// producer seals the frame and prepares the next one inside aurora_end_frame, so the GX thread never
+// waits for the frame worker's SEALED phase; see no_sealed_wait()).
 bool handoff_option(const char* flag);
+// "nosealed": aurora_end_frame() seals the finished frame and prepares the next one on the calling
+// thread, with the GX thread idle; the frame worker only encodes and presents. The decoder then
+// finds a mapped staging set and a pass 0 at the first hand-off of every frame instead of waiting
+// in wait_for_frame_worker_sealed() for seal, encode, the guest's first GX call and the staging map.
+bool no_sealed_wait();
 // "copysrc": GXSetTexCopySrc sets its producer-owned state without a sync.
 bool copy_src_nosync();
 // GXDrawDone / GXSetDrawDone: a full drain, as always, unless "drawdone" is set and the GX thread

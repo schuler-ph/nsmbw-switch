@@ -1085,16 +1085,40 @@ void map_staging_buffer() {
       });
 }
 
+// NSMBW: cumulative time begin_frame_impl() spent waiting for the staging map (see
+// staging_map_wait_stats). Written by whichever thread begins frames, read by the frame worker's log.
+static std::atomic<uint64_t> g_stagingMapWaitNanos{0};
+static std::atomic<uint64_t> g_stagingMapWaitFrames{0};
+static std::atomic<uint64_t> g_stagingMapBegins{0};
+
+void staging_map_wait_stats(uint64_t& waitNanos, uint64_t& framesWaited, uint64_t& frameBegins) noexcept {
+  waitNanos = g_stagingMapWaitNanos.load(std::memory_order_relaxed);
+  framesWaited = g_stagingMapWaitFrames.load(std::memory_order_relaxed);
+  frameBegins = g_stagingMapBegins.load(std::memory_order_relaxed);
+}
+
 static bool begin_frame_impl(bool clearEfb, bool capacityResume = false) {
   ZoneScoped;
   {
     ZoneScopedN("Wait for buffer map");
     map_staging_buffer();
+    g_stagingMapBegins.fetch_add(1, std::memory_order_relaxed);
+    bool waited = false;
+    const auto waitStart = std::chrono::steady_clock::now();
     while (true) {
       const auto mappingState = s_mappingState.state();
       if (mappingState == BufferMapState::Mapped) {
+        if (waited) {
+          g_stagingMapWaitNanos.fetch_add(
+              static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now() - waitStart)
+                                        .count()),
+              std::memory_order_relaxed);
+          g_stagingMapWaitFrames.fetch_add(1, std::memory_order_relaxed);
+        }
         break;
       }
+      waited = true;
       if (mappingState == BufferMapState::Unmapped) {
         // Frame begin failed because the staging map was aborted; the caller's retry loop drops the frame
         // and any one-shot bakes recorded into it. Rate-limited.
