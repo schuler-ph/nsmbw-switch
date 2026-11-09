@@ -7,6 +7,7 @@
 #include "platform/switch_platform.h"
 
 #include "dev_link.h"
+#include "guest_flat_memory.h"
 
 #include <aurora/aurora.h>
 
@@ -696,6 +697,9 @@ void EarlyInit() noexcept {
             std::fprintf(stderr, "[switch] %s (launch argument)\n", item.c_str());
         }
     }
+    // Decided while the statics initialized (guest_flat_memory.cpp); said here, after the launch
+    // arguments, so the log shows the switch next to its effect.
+    std::fprintf(stderr, "[switch] guest memory: %s\n", GuestFlat::SwitchAccessPathNote());
     // NSMBW_LOG_SD=0: no log files on the SD card from here on (the logger thread closes them once
     // it has written everything up to here). The SD writes left the game thread with the logger
     // thread; the switch stays for runs that should not touch the card at all. The devlink harness

@@ -91,15 +91,38 @@ uintptr_t g_switchFlatGuestBase __asm__("mkw_switch_flat_guest_base")
 
 // No page protection and no resumable faults on Horizon (see above): MMIO, deferred EFB reads,
 // the executable-write guard and wild pointers are only caught on the checked path. The flat fast
-// path (DriftDroid's choice for Mario Kart) is opt-in through a flag file until NSMBW is known to
-// run without any of those traps.
+// path (DriftDroid's choice for Mario Kart) is the default anyway: measured on the hardware
+// (standard test, played 1-1, 2026-11-08/09) it takes 24 % off the game thread's CPU time, 1-1 at
+// the standard clock went from 31.6 to 38.4 FPS, and six standard-test runs ended without a data
+// abort. The checked path stays as the fallback for diagnosis: sdmc:/switch/nsmbw/checked_memory.flag
+// or the launch argument --env=NSMBW_CHECKED_MEMORY=1 (read here from argv: this decision is made
+// while the program's statics initialize, before EarlyInit reads env.txt, so a line there does not
+// count). flat_memory.flag, the former opt-in, may stay on the card and has no effect.
+namespace {
+const char* g_switchAccessPathNote = "flat (fast) path, the default";
+}
+extern "C" {
+extern int __system_argc;
+extern char** __system_argv;
+}
 extern const bool g_requiresCheckedAccess = [] {
-    if (FILE* flag = std::fopen("sdmc:/switch/nsmbw/flat_memory.flag", "r")) {
+    if (FILE* flag = std::fopen("sdmc:/switch/nsmbw/checked_memory.flag", "r")) {
         std::fclose(flag);
-        return false;
+        g_switchAccessPathNote = "checked path (checked_memory.flag)";
+        return true;
     }
-    return true;
+    for (int i = 1; i < __system_argc; ++i) {
+        if (__system_argv[i] != nullptr && std::strcmp(__system_argv[i], "--env=NSMBW_CHECKED_MEMORY=1") == 0) {
+            g_switchAccessPathNote = "checked path (NSMBW_CHECKED_MEMORY=1)";
+            return true;
+        }
+    }
+    return false;
 }();
+
+const char* SwitchAccessPathNote() noexcept {
+    return g_switchAccessPathNote;
+}
 
 namespace {
 // svcMapProcessCodeMemory makes its source pages inaccessible, but newlib's allocator keeps a
