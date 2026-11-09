@@ -104,7 +104,30 @@ static void process_buffer(const uint8_t* data, uint32_t size) {
 // NSMBW: the GX thread (see threaded()). Buffers of commands are decoded on it in the order the
 // game thread queued them; the game thread waits for it only where it needs decoded state.
 namespace {
-constexpr uint32_t kHandOffBytes = 16 * 1024;  // queue a buffer once this much has built up
+// Queue a buffer once this much has built up. 16 KiB by default; the kb<N> flag picks another size
+// (smaller: the GX thread gets its work earlier and the tail a drain waits for is shorter, at the
+// cost of more hand-offs per frame).
+uint32_t hand_off_bytes() {
+  static const uint32_t bytes = [] {
+    const char* list = std::getenv("NSMBW_GX_HANDOFF");
+    if (list != nullptr) {
+      for (const char* p = list; *p != '\0';) {
+        const char* end = std::strchr(p, ',');
+        const size_t len = end != nullptr ? static_cast<size_t>(end - p) : std::strlen(p);
+        if (len > 2 && std::strncmp(p, "kb", 2) == 0) {
+          const long kib = std::strtol(p + 2, nullptr, 10);
+          if (kib >= 1 && kib <= 4096) {
+            return static_cast<uint32_t>(kib) * 1024u;
+          }
+        }
+        if (end == nullptr) break;
+        p = end + 1;
+      }
+    }
+    return 16u * 1024u;
+  }();
+  return bytes;
+}
 
 struct GxThread {
   std::thread thread;
@@ -193,9 +216,32 @@ void flush_async() {
     drain();
     return;
   }
-  if (detail::sBufferSize >= kHandOffBytes) {
+  if (detail::sBufferSize >= hand_off_bytes()) {
     hand_off();
   }
+}
+
+bool handoff_option(const char* flag) {
+  const char* list = std::getenv("NSMBW_GX_HANDOFF");
+  if (list == nullptr) {
+    return false;
+  }
+  const size_t flagLen = std::strlen(flag);
+  for (const char* p = list; *p != '\0';) {
+    const char* end = std::strchr(p, ',');
+    const size_t len = end != nullptr ? static_cast<size_t>(end - p) : std::strlen(p);
+    if (len == flagLen && std::strncmp(p, flag, len) == 0) {
+      return true;
+    }
+    if (end == nullptr) break;
+    p = end + 1;
+  }
+  return false;
+}
+
+bool copy_src_nosync() {
+  static const bool on = handoff_option("copysrc");
+  return on;
 }
 
 void sync_if_threaded() {
@@ -206,6 +252,15 @@ void sync_if_threaded() {
   auto& t = gx_thread();
   std::unique_lock lock(t.mutex);
   t.idle.wait(lock, [&t] { return t.jobs.empty() && !t.busy; });
+}
+
+void draw_done() {
+  static const bool async = handoff_option("drawdone");
+  if (async && threaded()) {
+    hand_off();
+    return;
+  }
+  drain();
 }
 
 void drain() {

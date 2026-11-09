@@ -2,6 +2,7 @@
 #include "perf_monitor.h"
 
 #include "aurora_events.h"
+#include "guest_profiler.h"
 #include "runtime_log.h"
 #include "settings_overlay.h"
 #include "wii_remote_input.h"
@@ -411,6 +412,8 @@ void RequestExit(const char* reason) noexcept {
     if (g_exitPending.exchange(true, std::memory_order_acq_rel)) return;
     RT_LOGF(RT_TAG_RUNTIME, "perf: ending the program: %s\n", reason);
     LogRunSummary(reason);
+    // The sampling profiler's last, partial window (NSMBW_PROFILE), before the link flushes.
+    GuestProfiler::FlushWindow(reason);
 #if defined(__SWITCH__)
     // Lets the dev link send what is queued, then ends the process (SwitchPlatform::ExitProgram).
     DevLink::RequestQuit();

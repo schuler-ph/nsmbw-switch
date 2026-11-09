@@ -339,7 +339,12 @@ void GXSetDispCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
 }
 
 void GXSetTexCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
-  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
+  // texCopySrc belongs to the producer: the decoder never writes it (BP 0x49/0x4A are the display
+  // copy's), and its readers (GXCopyTex, the digest) sync first. NSMBW_GX_COPYSRC_NOSYNC=1 skips the
+  // sync here, which NSMBW otherwise pays several times per frame mid-draw (A/B).
+  if (!aurora::gx::fifo::copy_src_nosync()) {
+    aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
+  }
   g_gxState.texCopySrc = {left, top, wd, ht};
   g_gxState.texCopySrcRenderSpace = false;
 }

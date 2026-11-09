@@ -91,6 +91,17 @@ bool threaded();
 void flush_async();
 // Waits for the worker to finish everything queued (threaded only; a no-op otherwise).
 void sync_if_threaded();
+// NSMBW_GX_HANDOFF=<flag>[,<flag>...] tunes the hand-off to the GX thread (one variable, as the
+// Switch launcher passes at most 419 characters of arguments). Flags: kb<N> (hand-off threshold in
+// KiB, default 16), copysrc (GXSetTexCopySrc without a sync), drawdone (GXDrawDone hands off and
+// returns), overlap (frame worker encodes after SEALED, like NSMBW_OVERLAP_ENCODE=1).
+bool handoff_option(const char* flag);
+// "copysrc": GXSetTexCopySrc sets its producer-owned state without a sync.
+bool copy_src_nosync();
+// GXDrawDone / GXSetDrawDone: a full drain, as always, unless "drawdone" is set and the GX thread
+// is on; then what is buffered is handed to the GX thread and the producer carries on. Anything
+// that reads decoded state (EFB copies, the frame seal) still syncs on its own.
+void draw_done();
 
 // AuroraBeginCommandDigest: while on, process() and texture copies fold what they see into the digest.
 extern bool g_commandDigestOn;

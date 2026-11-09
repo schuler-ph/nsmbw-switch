@@ -1903,7 +1903,8 @@ bool run_frame_worker_cycle(gfx::SealedFrame& sealedFrame) noexcept {
 #ifdef __ANDROID__
     static const bool serialEncode = std::getenv("NSMBW_SERIAL_ENCODE") != nullptr;
 #else
-    static const bool serialEncode = std::getenv("NSMBW_OVERLAP_ENCODE") == nullptr;
+    static const bool serialEncode =
+        std::getenv("NSMBW_OVERLAP_ENCODE") == nullptr && !gx::fifo::handoff_option("overlap");
 #endif
     overlapEncode = ctx.interpolationActive || !serialEncode;
     if (!overlapEncode) {
@@ -2198,6 +2199,23 @@ void aurora_register_perf_thread(const char* group) {
 #else
   (void)group;
 #endif
+}
+
+size_t aurora_perf_thread_handles(const char* group, uint32_t* out, size_t max) {
+  size_t count = 0;
+#if defined(__SWITCH__)
+  std::lock_guard lock(g_perfThreadMutex);
+  for (const PerfThread& thread : g_perfThreads) {
+    if (std::strcmp(thread.group, group) != 0) continue;
+    if (count < max) out[count] = thread.handle;
+    ++count;
+  }
+#else
+  (void)group;
+  (void)out;
+  (void)max;
+#endif
+  return count;
 }
 
 size_t aurora_perf_thread_cpu(AuroraPerfThreadCpu* out, size_t max) {

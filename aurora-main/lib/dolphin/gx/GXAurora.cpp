@@ -178,7 +178,9 @@ void GXRestoreViewportScissorRender() {
 }
 
 void GXSetTexCopySrcRender(u16 left, u16 top, u16 wd, u16 ht) {
-  aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
+  if (!aurora::gx::fifo::copy_src_nosync()) {
+    aurora::gx::fifo::sync_if_threaded();  // reads or writes decoded state directly
+  }
   aurora::gx::g_gxState.texCopySrc = {left, top, wd, ht};
   aurora::gx::g_gxState.texCopySrcRenderSpace = true;
 }
