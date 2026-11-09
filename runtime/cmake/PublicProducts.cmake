@@ -32,7 +32,7 @@ if(MKW_PLATFORM_MACOS)
 endif()
 
 function(mkw_apply_common_compile_options target)
-    target_compile_options(${target} PRIVATE -O3 -ffast-math -w -pipe)
+    target_compile_options(${target} PRIVATE -O3 -ffast-math -w -pipe ${MKW_SWITCH_CODE_MODEL_FLAG})
 endfunction()
 
 function(mkw_apply_translated_compile_options target)
@@ -42,7 +42,7 @@ function(mkw_apply_translated_compile_options target)
         # GCC builds the shards -fPIC and then treats every non-static function as interposable,
         # which blocks inlining across the corpus. The .nro is one static executable, so nothing is
         # interposed (DriftDroid's Switch build does the same).
-        target_compile_options(${target} PRIVATE -fno-semantic-interposition)
+        target_compile_options(${target} PRIVATE -fno-semantic-interposition ${MKW_SWITCH_CODE_MODEL_FLAG})
     endif()
 endfunction()
 

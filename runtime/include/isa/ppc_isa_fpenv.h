@@ -3,6 +3,7 @@
 // the thread-local mirror of that state the hot paths read instead of MXCSR/FPCR.
 
 #include "ppc_isa_config.h"
+#include "ppc_isa_tls.h"
 
 #include <cstdint>
 
@@ -32,6 +33,10 @@ inline thread_local bool g_mkwHostNiActive = false;
 // needs no branch. Every writer of g_mkwHostNiActive must write this beside it in agreement.
 inline constexpr double kMkwNiFlushThreshold = 0x1p-126;  // 0x3810000000000000
 inline thread_local double g_mkwNiFlushThreshold = 0.0;
+
+// Hot-path access (ppc_isa_tls.h): read and write both mirrors only through these.
+MKW_HOT_TLS_ACCESSOR(MkwHostNiActiveTls, bool, g_mkwHostNiActive, "g_mkwHostNiActive")
+MKW_HOT_TLS_ACCESSOR(MkwNiFlushThresholdTls, double, g_mkwNiFlushThreshold, "g_mkwNiFlushThreshold")
 
 // Host FP control register access (MXCSR on x86_64, FPCR on AArch64), abstracted so
 // MkwApplyHostNiMode/MkwRestoreHostMxcsr and CpuContextScope (ppc_isa_context.h) don't each need
@@ -74,8 +79,8 @@ inline void MkwApplyHostNiMode(uint32_t fpscr) noexcept
     // `(MkwGetHostFpControl() & kMkwFpControlFlushToZeroBits) != 0` after the write - the
     // mirror cannot disagree with the register even if the incoming value held only some of
     // those bits.
-    g_mkwHostNiActive = wantNi;
-    g_mkwNiFlushThreshold = wantNi ? kMkwNiFlushThreshold : 0.0;
+    MkwHostNiActiveTls() = wantNi;
+    MkwNiFlushThresholdTls() = wantNi ? kMkwNiFlushThreshold : 0.0;
 }
 
 /// <summary>
@@ -87,6 +92,6 @@ inline void MkwRestoreHostMxcsr(uint32_t csr) noexcept
 {
     MkwSetHostFpControl(csr);
     const bool niActive = (csr & kMkwFpControlFlushToZeroBits) != 0;
-    g_mkwHostNiActive = niActive;
-    g_mkwNiFlushThreshold = niActive ? kMkwNiFlushThreshold : 0.0;
+    MkwHostNiActiveTls() = niActive;
+    MkwNiFlushThresholdTls() = niActive ? kMkwNiFlushThreshold : 0.0;
 }

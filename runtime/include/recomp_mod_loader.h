@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include "isa/ppc_isa_tls.h"
+
 struct CpuContext;
 
 namespace RecompMod {
@@ -25,20 +27,25 @@ struct MemoryReservation {
 // in the .cpp: every indirect dispatch scopes this, so an out-of-line ctor/dtor would cost two
 // un-inlinable calls plus a register spill each for three instructions of work.
 inline thread_local uint32_t g_currentTranslatedExecutionAddress = 0;
+// Hot-path access (isa/ppc_isa_tls.h).
+MKW_HOT_TLS_ACCESSOR(CurrentTranslatedExecutionAddressTls, uint32_t,
+                     g_currentTranslatedExecutionAddress,
+                     "_ZN9RecompMod35g_currentTranslatedExecutionAddressE")
 
 class ScopedTranslatedExecutionAddress {
 public:
-    explicit ScopedTranslatedExecutionAddress(uint32_t address) noexcept
-        : previous_(g_currentTranslatedExecutionAddress) {
+    explicit ScopedTranslatedExecutionAddress(uint32_t address) noexcept {
+        uint32_t& current = CurrentTranslatedExecutionAddressTls();
+        previous_ = current;
         // Address 0 means "nothing new to report" - the enclosing scope's value
         // stays visible, and the unconditional restore below keeps nesting exact.
         if (address != 0) {
-            g_currentTranslatedExecutionAddress = address;
+            current = address;
         }
     }
 
     ~ScopedTranslatedExecutionAddress() noexcept {
-        g_currentTranslatedExecutionAddress = previous_;
+        CurrentTranslatedExecutionAddressTls() = previous_;
     }
 
     ScopedTranslatedExecutionAddress(const ScopedTranslatedExecutionAddress&) = delete;

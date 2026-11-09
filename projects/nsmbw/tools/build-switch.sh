@@ -11,6 +11,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage: build-switch.sh --dawn-src DIR --dawn-build DIR --uam LIB [--build DIR] [--jobs N] [--stage DIR]
+                       [--cmake-arg ARG]...
 
   --dawn-src DIR    patched Dawn source tree (AURORA_SWITCH_DAWN_SOURCE_DIR)
   --dawn-build DIR  its devkitA64 build tree with src/dawn/native/libwebgpu_dawn.a
@@ -19,6 +20,7 @@ Usage: build-switch.sh --dawn-src DIR --dawn-build DIR --uam LIB [--build DIR] [
                     and FetchContent patches misbehave inside another work tree)
   --jobs N          parallel jobs; translated shards are capped at 4 (about 1 GiB each with GCC)
   --stage DIR       also lay out an SD-card folder there: DIR/switch/nsmbw/{nsmbw.nro,dsp_coef.bin,...}
+  --cmake-arg ARG   extra configure argument, repeatable (e.g. --cmake-arg -DMKW_SWITCH_PIE_OBJECTS=ON)
 EOF
 }
 
@@ -29,6 +31,7 @@ dawn_src=""
 dawn_build=""
 uam=""
 stage=""
+cmake_args=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dawn-src) dawn_src=$2; shift 2 ;;
@@ -37,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --build) build=$2; shift 2 ;;
         --jobs) jobs=$2; shift 2 ;;
         --stage) stage=$2; shift 2 ;;
+        --cmake-arg) cmake_args+=("$2"); shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) usage; echo "build-switch.sh: unknown argument: $1" >&2; exit 1 ;;
     esac
@@ -56,7 +60,7 @@ cmake -S "$repo/runtime" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
     -DMKW_TRANSLATED_COMPILE_JOBS=4 -DNSMBW_GAME_ID=SMNE01 \
     -DAURORA_SWITCH_DAWN_SOURCE_DIR="$dawn_src" -DAURORA_SWITCH_DAWN_BUILD_DIR="$dawn_build" \
-    -DAURORA_SWITCH_UAM_LIB="$uam"
+    -DAURORA_SWITCH_UAM_LIB="$uam" "${cmake_args[@]}"
 cmake --build "$build" --target nsmbw_nro --parallel "$jobs"
 echo "Done: $build/nsmbw.nro (symbols: $build/WiiCompiled.elf)"
 
