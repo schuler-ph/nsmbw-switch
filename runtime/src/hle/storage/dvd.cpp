@@ -25,7 +25,19 @@ extern "C" void GxNotifyGuestRamDmaWrite(uint32_t addr, uint32_t size);
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#elif defined(__SWITCH__)
+#include "platform/switch_file.h"
+#else
+#include <fcntl.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <sys/syscall.h>
 #endif
+#endif
+#include <condition_variable>
+#include <deque>
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
@@ -121,6 +133,11 @@ std::unordered_map<fs::path::string_type, FileBytes> g_readCache;
 std::atomic<uint64_t> g_dvdReadNanos{0};
 std::atomic<uint32_t> g_dvdReads{0};
 
+// "folder/file" of a host path, for the read trace and the cache's log lines.
+std::string HostPathTextForLog(const fs::path& path) {
+    return RuntimeConfigFile::PathToUtf8(path.parent_path().filename() / path.filename());
+}
+
 FileBytes CachedFile(const fs::path& path) {
     std::lock_guard lock(g_readCacheMutex);
     const auto it = g_readCache.find(path.native());
@@ -194,11 +211,318 @@ bool ReadWithOpenFile(const fs::path& path, uint64_t offset, uint32_t length, st
 }
 #endif
 
+// Bounds check and copy of a read served from a whole-file copy in memory (ReadExact's contract).
+bool CopyFromBytes(const std::vector<uint8_t>& bytes, uint64_t offset, uint32_t length,
+                   std::vector<uint8_t>& destination, DvdReadContract::HostReadFailure& failure) {
+    failure = DvdReadContract::HostReadFailure::None;
+    if (offset >= bytes.size()) {
+        failure = DvdReadContract::HostReadFailure::BadOffset;
+        return false;
+    }
+    if (length > bytes.size() - offset) {
+        failure = DvdReadContract::HostReadFailure::ShortRead;
+        return false;
+    }
+    destination.assign(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                       bytes.begin() + static_cast<std::ptrdiff_t>(offset + length));
+    return true;
+}
+
+// NSMBW_DVD_TRACE=1: one log line per disc read (file, range, time, where it was served from).
+bool DvdTraceEnabled() {
+    static const bool on = [] {
+        const char* value = std::getenv("NSMBW_DVD_TRACE");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return on;
+}
+const char* g_lastReadSource = "open";
+
+#if !defined(_WIN32) && !defined(__ANDROID__)
+// NSMBW_FSCACHE=1 (default off; Linux and Switch, where nothing above caches): the game's reads
+// otherwise open the file, query its size, seek, read and close it again on the game thread, five
+// file-system calls per read (on the Switch each one an IPC to the fs service; the music streamed
+// during a level is read this way, a few blocks at a time). With the switch:
+//  - files the game reads stay open (up to kMaxKeptFiles, least recently used closed first), so a
+//    read is one positioned read (on the Switch one fsFileRead IPC);
+//  - the first read of a file (up to kMaxFileBytes) also queues it for a background thread that
+//    reads the whole file into memory; later reads are a copy from there. The copies share one
+//    budget (NSMBW_FSCACHE_MB, default 256 MiB), the least recently used dropped first.
+// The disc is read-only, so a copy can never be stale; until a file's copy is complete its reads
+// go to the kept handle, and the guest sees the same synchronous completion either way.
+namespace FsCache {
+
+constexpr uint64_t kMaxFileBytes = 64ull << 20;
+constexpr size_t kMaxKeptFiles = 16;
+constexpr size_t kLoadChunk = 1u << 20;
+
+bool Enabled() {
+    static const bool on = [] {
+        const char* value = std::getenv("NSMBW_FSCACHE");
+        return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+    }();
+    return on;
+}
+
+uint64_t BudgetBytes() {
+    static const uint64_t budget = [] {
+        uint64_t mib = 256;
+        if (const char* value = std::getenv("NSMBW_FSCACHE_MB")) {
+            const unsigned long long parsed = std::strtoull(value, nullptr, 10);
+            if (parsed > 0 && parsed <= 4096) mib = parsed;
+        }
+        return mib << 20;
+    }();
+    return budget;
+}
+
+// A file opened for positioned reads.
+class ReadFile {
+public:
+    ReadFile() = default;
+    ReadFile(const ReadFile&) = delete;
+    ReadFile& operator=(const ReadFile&) = delete;
+    ~ReadFile() { Close(); }
+
+    bool Open(const fs::path& path) {
+        Close();
+#if defined(__SWITCH__)
+        m_handle = SwitchFile::Open(path.c_str(), &m_size);
+        return m_handle != nullptr;
+#else
+        m_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        struct stat st {};
+        if (m_fd < 0 || ::fstat(m_fd, &st) != 0 || st.st_size < 0) {
+            Close();
+            return false;
+        }
+        m_size = static_cast<uint64_t>(st.st_size);
+        return true;
+#endif
+    }
+
+    bool Read(uint64_t offset, void* destination, size_t length) {
+#if defined(__SWITCH__)
+        return SwitchFile::Read(m_handle, offset, destination, length);
+#else
+        auto* out = static_cast<uint8_t*>(destination);
+        size_t done = 0;
+        while (done < length) {
+            const ssize_t got = ::pread(m_fd, out + done, length - done, static_cast<off_t>(offset + done));
+            if (got <= 0) return false;
+            done += static_cast<size_t>(got);
+        }
+        return true;
+#endif
+    }
+
+    void Close() {
+#if defined(__SWITCH__)
+        SwitchFile::Close(m_handle);
+        m_handle = nullptr;
+#else
+        if (m_fd >= 0) ::close(m_fd);
+        m_fd = -1;
+#endif
+        m_size = 0;
+    }
+
+    uint64_t Size() const { return m_size; }
+
+private:
+#if defined(__SWITCH__)
+    SwitchFile::Handle* m_handle = nullptr;
+#else
+    int m_fd = -1;
+#endif
+    uint64_t m_size = 0;
+};
+
+// Kept-open files: the game thread is the only reader of the DVD HLE, so no lock.
+struct Kept {
+    std::unique_ptr<ReadFile> file;
+    uint64_t lastUse = 0;
+};
+std::unordered_map<fs::path::string_type, Kept> g_kept;
+uint64_t g_keptClock = 0;
+
+// Whole-file copies, shared with the loader thread.
+struct Copy {
+    FileBytes bytes;
+    uint64_t lastUse = 0;
+};
+std::mutex g_mutex;
+std::condition_variable g_wake;
+std::unordered_map<fs::path::string_type, Copy> g_copies;
+std::unordered_set<fs::path::string_type> g_queued;
+std::deque<fs::path> g_queue;
+uint64_t g_copyBytes = 0;
+uint64_t g_copyClock = 0;
+bool g_loaderStarted = false;
+
+FileBytes Lookup(const fs::path& path) {
+    std::lock_guard lock(g_mutex);
+    const auto it = g_copies.find(path.native());
+    if (it == g_copies.end()) return nullptr;
+    it->second.lastUse = ++g_copyClock;
+    return it->second.bytes;
+}
+
+// Adds a complete copy, dropping the least recently used ones beyond the budget. g_mutex held.
+void InsertLocked(const fs::path& path, std::shared_ptr<std::vector<uint8_t>> bytes) {
+    if (g_copies.find(path.native()) != g_copies.end()) return;
+    const uint64_t size = bytes->size();
+    while (!g_copies.empty() && g_copyBytes + size > BudgetBytes()) {
+        auto oldest = g_copies.begin();
+        for (auto it = g_copies.begin(); it != g_copies.end(); ++it) {
+            if (it->second.lastUse < oldest->second.lastUse) oldest = it;
+        }
+        g_copyBytes -= oldest->second.bytes->size();
+        g_copies.erase(oldest);
+    }
+    g_copies.emplace(path.native(), Copy{std::move(bytes), ++g_copyClock});
+    g_copyBytes += size;
+}
+
+void LoaderMain() {
+#if defined(__linux__)
+    setpriority(PRIO_PROCESS, static_cast<id_t>(::syscall(SYS_gettid)), 19);  // never ahead of the game
+#endif
+    for (;;) {
+        fs::path path;
+        {
+            std::unique_lock lock(g_mutex);
+            g_wake.wait(lock, [] { return !g_queue.empty(); });
+            path = std::move(g_queue.front());
+            g_queue.pop_front();
+        }
+        const auto start = std::chrono::steady_clock::now();
+        ReadFile file;
+        std::shared_ptr<std::vector<uint8_t>> bytes;
+        bool ok = file.Open(path) && file.Size() > 0 && file.Size() <= kMaxFileBytes;
+        if (ok) {
+            try {
+                bytes = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(file.Size()));
+            } catch (const std::bad_alloc&) {
+                ok = false;
+            }
+        }
+        for (uint64_t done = 0; ok && done < file.Size(); done += kLoadChunk) {
+            const size_t chunk = static_cast<size_t>(std::min<uint64_t>(kLoadChunk, file.Size() - done));
+            ok = file.Read(done, bytes->data() + done, chunk);
+        }
+        file.Close();
+        {
+            std::lock_guard lock(g_mutex);
+            g_queued.erase(path.native());
+            if (ok) InsertLocked(path, std::move(bytes));
+        }
+        uint64_t total = 0, files = 0;
+        {
+            std::lock_guard lock(g_mutex);
+            total = g_copyBytes;
+            files = g_copies.size();
+        }
+        RT_LOG(RT_TAG_DVD) << "fscache: " << (ok ? "loaded " : "could not load ") << HostPathTextForLog(path)
+                           << " in "
+                           << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now() - start)
+                                  .count()
+                           << " ms; " << files << " file(s), " << (total >> 10) << " KiB in memory" << std::endl;
+    }
+}
+
+void QueueLoad(const fs::path& path, uint64_t size) {
+    if (size == 0 || size > kMaxFileBytes || size > BudgetBytes()) return;
+    {
+        std::lock_guard lock(g_mutex);
+        if (g_copies.count(path.native()) != 0 || !g_queued.insert(path.native()).second) return;
+        g_queue.push_back(path);
+        if (!g_loaderStarted) {
+            try {
+                std::thread(LoaderMain).detach();
+                g_loaderStarted = true;
+            } catch (const std::system_error&) {
+                g_queue.clear();  // no loader: the kept handles still serve every read
+                return;
+            }
+        }
+    }
+    g_wake.notify_one();
+}
+
+bool Read(const fs::path& path, uint64_t offset, uint32_t length, std::vector<uint8_t>& destination,
+          DvdReadContract::HostReadFailure& failure) {
+    if (const FileBytes bytes = Lookup(path)) {
+        g_lastReadSource = "ram";
+        return CopyFromBytes(*bytes, offset, length, destination, failure);
+    }
+    failure = DvdReadContract::HostReadFailure::None;
+    bool firstRead = false;
+    auto it = g_kept.find(path.native());
+    if (it != g_kept.end()) {
+        g_lastReadSource = "kept";
+    } else {
+        g_lastReadSource = "open";
+        auto file = std::make_unique<ReadFile>();
+        if (!file->Open(path)) {
+            failure = DvdReadContract::HostReadFailure::MissingFile;
+            return false;
+        }
+        if (g_kept.size() >= kMaxKeptFiles) {
+            auto oldest = g_kept.begin();
+            for (auto i = g_kept.begin(); i != g_kept.end(); ++i) {
+                if (i->second.lastUse < oldest->second.lastUse) oldest = i;
+            }
+            g_kept.erase(oldest);
+        }
+        it = g_kept.emplace(path.native(), Kept{std::move(file), 0}).first;
+        firstRead = true;
+    }
+    it->second.lastUse = ++g_keptClock;
+    ReadFile& file = *it->second.file;
+    if (offset >= file.Size()) {
+        failure = DvdReadContract::HostReadFailure::BadOffset;
+        return false;
+    }
+    if (length > file.Size() - offset) {
+        failure = DvdReadContract::HostReadFailure::ShortRead;
+        return false;
+    }
+    // Staged, like ReadExact: the guest buffer is only written once the whole range is here.
+    destination.resize(length);
+    if (length != 0 && !file.Read(offset, destination.data(), length)) {
+        g_kept.erase(it);  // reopened on the next read
+        failure = DvdReadContract::HostReadFailure::ShortRead;
+        return false;
+    }
+    if (firstRead) {
+        const uint64_t size = file.Size();
+        if (offset == 0 && length == size && size <= kMaxFileBytes && size <= BudgetBytes()) {
+            // Read whole (most archives): keep this copy instead of reading the file a second time.
+            try {
+                auto bytes = std::make_shared<std::vector<uint8_t>>(destination);
+                std::lock_guard lock(g_mutex);
+                InsertLocked(path, std::move(bytes));
+            } catch (const std::bad_alloc&) {
+            }
+        } else {
+            QueueLoad(path, size);  // read in parts (the streamed music): the loader fetches it whole
+        }
+    }
+    return true;
+}
+
+} // namespace FsCache
+#endif
+
 bool ReadHostFile(const fs::path& path, uint64_t offset, uint32_t length, std::vector<uint8_t>& destination,
                   DvdReadContract::HostReadFailure& failure) {
     const auto start = std::chrono::steady_clock::now();
     bool ok = false;
+    g_lastReadSource = "open";
     if (const FileBytes bytes = CachedFile(path)) {
+        g_lastReadSource = "ram";
         failure = DvdReadContract::HostReadFailure::None;
         if (offset >= bytes->size()) {
             failure = DvdReadContract::HostReadFailure::BadOffset;
@@ -212,15 +536,21 @@ bool ReadHostFile(const fs::path& path, uint64_t offset, uint32_t length, std::v
     } else {
 #if defined(__ANDROID__)
         ok = ReadWithOpenFile(path, offset, length, destination, failure);
+#elif !defined(_WIN32)
+        ok = FsCache::Enabled() ? FsCache::Read(path, offset, length, destination, failure)
+                                : DvdReadContract::ReadExact(path, offset, length, destination, failure);
 #else
         ok = DvdReadContract::ReadExact(path, offset, length, destination, failure);
 #endif
     }
-    g_dvdReadNanos.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                       std::chrono::steady_clock::now() - start)
-                                                       .count()),
-                             std::memory_order_relaxed);
+    const uint64_t nanos = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+    g_dvdReadNanos.fetch_add(nanos, std::memory_order_relaxed);
     g_dvdReads.fetch_add(1, std::memory_order_relaxed);
+    if (DvdTraceEnabled()) {
+        RT_LOGF(RT_TAG_DVD, "read %s +0x%llx len 0x%x: %s, %.3f ms%s\n", HostPathTextForLog(path).c_str(),
+                static_cast<unsigned long long>(offset), length, g_lastReadSource, nanos / 1e6, ok ? "" : " FAILED");
+    }
     return ok;
 }
 
