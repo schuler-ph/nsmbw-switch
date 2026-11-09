@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string_view>
 
 #include <absl/container/flat_hash_map.h>
 #include <magic_enum.hpp>
@@ -643,8 +644,15 @@ void resolve_pass(TextureHandle texture, ClipRect rect, bool clearColor, bool cl
   prevPass.resolveNeedsConversion = samplingPlan.needsConversion;
   prevPass.resolveNeedsShaderSampling = samplingPlan.needsShaderSampling;
   prevPass.resolveLinearSampling = samplingPlan.usesLinearSampling;
-  prevPass.snapshotColorResolveSource =
-      !gx::is_depth_format(resolveFormat) && (clearColor || clearAlpha || clearDepth);
+  // NSMBW_GPU_TIMING token "nosnap" (A/B): read the EFB directly instead of first copying it into
+  // the source snapshot. render_impl encodes the resolve right after its pass ends and before the
+  // next pass clears, so the command order already keeps the source intact.
+  static const bool s_noResolveSnapshot = [] {
+    const char* env = std::getenv("NSMBW_GPU_TIMING");
+    return env != nullptr && std::string_view{env}.find("nosnap") != std::string_view::npos;
+  }();
+  prevPass.snapshotColorResolveSource = !s_noResolveSnapshot && !gx::is_depth_format(resolveFormat) &&
+                                        (clearColor || clearAlpha || clearDepth);
   Vec4<float> uniformSourceRect = sourceRect;
   float srcW = static_cast<float>(prevPass.targetSize.width);
   float srcH = static_cast<float>(prevPass.targetSize.height);
