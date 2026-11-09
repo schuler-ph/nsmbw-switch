@@ -1731,6 +1731,7 @@ void HandleEvents(const AuroraEvent* events) noexcept {
     for (const AuroraEvent* ev = events; ev->type != AURORA_NONE; ++ev) {
         if (ev->type == AURORA_CONTROLLER_ADDED || ev->type == AURORA_CONTROLLER_REMOVED) {
             g_configuredControllerIndices.fill(std::numeric_limits<int32_t>::min());
+            WiiRemoteInput::InvalidatePortCache();  // the port -> gamepad answers it cached are stale
             // Which pad each player's remote now reads (player 1 is Mario).
             std::string ports;
             for (uint32_t port = 0; port < PAD_MAX_CONTROLLERS; ++port) {
