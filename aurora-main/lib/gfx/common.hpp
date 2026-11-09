@@ -324,6 +324,10 @@ void render(wgpu::CommandEncoder& cmd, int32_t interpolatedFrame = -1, bool fina
 void expire_bind_group_cache() noexcept;
 void after_submit() noexcept;
 void map_staging_buffer();
+// NSMBW: how long begin_frame() has waited for the staging buffer map so far (cumulative nanoseconds,
+// the number of frames that had to wait at all, and the number of frame begins). Diagnostic for the
+// frame-worker cycle log in aurora.cpp.
+void staging_map_wait_stats(uint64_t& waitNanos, uint64_t& framesWaited, uint64_t& frameBegins) noexcept;
 // `persistentCopy` marks resolves whose destination outlives the frame with no re-issue path, so
 // the pass waits for its pipelines instead of dropping draws that would be baked in permanently.
 // NSMBW: after `source` (a resolve target) is resolved this frame, copy it, scaled to width x height,
