@@ -2302,9 +2302,36 @@ static void merge_into(DrawData* lastDraw, GXPrimitive prim, u16 vtxCount, const
 static bool raw_draw_locked(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
                             uint32_t vertexBytes, std::unique_lock<std::recursive_mutex>* lock);
 
+// With the GX thread the draw is queued behind everything before it, vertices and all.
+static bool queue_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
+                           uint32_t vertexBytes) {
+  GX_WRITE_AURORA(GX_LOAD_AURORA_RAW_DRAW);
+  GX_WRITE_U8(static_cast<u8>(prim));
+  GX_WRITE_U8(static_cast<u8>(fmt));
+  GX_WRITE_U16(vtxCount);
+  GX_WRITE_U32(vertexBytes);
+  write_data(vertices, vertexBytes);
+  flush_async();
+  return true;
+}
+
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
                      uint32_t vertexBytes) {
   ZoneScoped;
+  // NSMBW_GXFAST: queueing a draw for the GX thread is a copy into the FIFO, so it is not timed as GX
+  // work (two clock reads per draw on the game thread; the water in 4-1 issues thousands).
+  if (AuroraGxFastLevel() > 0 && threaded()) {
+    if (StatTiming()) {
+      g_statDraws.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (vertices == nullptr || vtxCount == 0 || vertexBytes == 0) {
+      return false;
+    }
+    if (__gx->dirtyState != 0) UNLIKELY {
+      __GXSetDirtyState();
+    }
+    return queue_raw_draw(prim, fmt, vertices, vtxCount, vertexBytes);
+  }
   ProcessTimer timer;
   // Collect diagnostic draw counts only while profiling. In normal gameplay this
   // is executed thousands of times per frame; avoid an unconditional atomic RMW
@@ -2322,14 +2349,7 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
 
   // NSMBW: with the GX thread, the draw is queued behind everything before it, vertices and all.
   if (threaded()) {
-    GX_WRITE_AURORA(GX_LOAD_AURORA_RAW_DRAW);
-    GX_WRITE_U8(static_cast<u8>(prim));
-    GX_WRITE_U8(static_cast<u8>(fmt));
-    GX_WRITE_U16(vtxCount);
-    GX_WRITE_U32(vertexBytes);
-    write_data(vertices, vertexBytes);
-    flush_async();
-    return true;
+    return queue_raw_draw(prim, fmt, vertices, vtxCount, vertexBytes);
   }
   if (g_commandDigestOn) UNLIKELY {
     g_commandDigest = xxh3_hash_s(vertices, vertexBytes, g_commandDigest ^ (u32(prim) << 8 | u32(fmt)));

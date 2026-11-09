@@ -130,6 +130,15 @@ uint64_t AuroraEndCommandDigest(void);
 // NSMBW: aurora's vertex descriptor (vcdLo, vcdHi), format `fmt`'s attribute table (vatA/B/C) and
 // normal type, as last set through the GX API.
 void AuroraGetVtxFormatRegs(uint32_t fmt, uint32_t out[6]);
+// NSMBW_GXFAST: the same registers plus hasNrms | hasBiNrms << 8 (what __GXSetVCD also sends).
+void AuroraGetVtxShadow(uint32_t fmt, uint32_t out[7]);
+// NSMBW_GXFAST: if the GX thread is on and aurora's shadow still equals `expect` (taken right after a
+// full republish of the same HLE state), marks VCD and format `fmt`'s VAT dirty exactly as that
+// republish would (with the GX thread every GXSetVtxDesc/GXSetVtxAttrFmt marks them) and returns true,
+// so the caller can skip the 40-odd setter calls. Returns false and changes nothing otherwise.
+bool AuroraResendVtxShadow(uint32_t fmt, const uint32_t expect[7]);
+// NSMBW_GXFAST level, read once from the environment (0 = off).
+int AuroraGxFastLevel(void);
 // NSMBW: with the GX thread (NSMBW_GX_THREAD=1), waits until it has decoded everything queued, so
 // memory a queued command points at may be reused. A no-op otherwise.
 void AuroraGxSync(void);
