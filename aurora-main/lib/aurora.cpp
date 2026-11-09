@@ -584,8 +584,35 @@ struct PendingFrameCapture {
   void* user = nullptr;
 };
 
+// NSMBW_SHOT=<frame>[,<frame>...] (debugging): writes those frames (aurora's frame counter) to
+// shot-<frame>.bmp in the working directory, for A/B image checks of two runs in deterministic mode.
+// Queued one at a time through the aurora_request_frame_capture slot.
+static void queue_env_frame_captures(uint32_t currentFrame) {
+  static std::vector<uint32_t> frames = [] {
+    std::vector<uint32_t> parsed;
+    if (const char* list = std::getenv("NSMBW_SHOT"); list != nullptr) {
+      for (const char* p = list; *p != '\0';) {
+        char* end = nullptr;
+        const unsigned long value = std::strtoul(p, &end, 10);
+        if (end == p) break;
+        parsed.push_back(static_cast<uint32_t>(value));
+        p = *end == ',' ? end + 1 : end;
+      }
+    }
+    std::sort(parsed.begin(), parsed.end());
+    return parsed;
+  }();
+  static size_t next = 0;
+  if (next >= frames.size() || g_captureFrame.load(std::memory_order_acquire) != UINT32_MAX) return;
+  while (next < frames.size() && frames[next] < currentFrame) ++next;
+  if (next >= frames.size()) return;
+  g_captureOutputPath = "shot-" + std::to_string(frames[next]) + ".bmp";
+  g_captureFrame.store(frames[next++], std::memory_order_release);
+}
+
 std::optional<PendingFrameCapture> encode_frame_capture(const wgpu::CommandEncoder& encoder,
                                                         const webgpu::PresentSource& source) {
+  queue_env_frame_captures(gfx::current_frame());
   AuroraFrameReadbackCallback callback = nullptr;
   void* user = nullptr;
   {

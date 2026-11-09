@@ -308,12 +308,23 @@ extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {
         return;
     }
     ServiceDeferredTimingDuringGxWork();
-    ApplyAuroraVtxStateForBegin(static_cast<GXVtxFmt>(vf));
+    // NSMBW_GXFAST: a raw-gathered draw publishes its vertex state itself when it is complete
+    // (gx_fifo.cpp ApplyAuroraVtxStateForRawBegin, also on its per-attribute fallback), and that
+    // publish overwrites every field this one sets, so publishing here first changes nothing aurora
+    // ever draws with. Only GXBegins that take the per-attribute path still need it.
+    const bool fast = GxStream::GxFast();
+    if (!fast) {
+        ApplyAuroraVtxStateForBegin(static_cast<GXVtxFmt>(vf));
+    }
     g_hleGxState.currentVtxFmt=(GXVtxFmt)vf; g_hleGxState.currentPrim=(GXPrimitive)t;
     g_hleGxState.vertsRemaining=nv; g_hleGxState.inBegin=true; g_hleGxState.auroraBeginCalled=false;
     g_hleGxState.fifoReadOffset = 0;
     g_hleGxState.fifoByteCount=0; g_hleGxState.ResetVertex();
-    HleTryBeginRaw(static_cast<GXPrimitive>(t), static_cast<GXVtxFmt>(vf), static_cast<uint16_t>(nv));
+    const bool raw =
+        HleTryBeginRaw(static_cast<GXPrimitive>(t), static_cast<GXVtxFmt>(vf), static_cast<uint16_t>(nv));
+    if (fast && !raw) {
+        ApplyAuroraVtxStateForBegin(static_cast<GXVtxFmt>(vf));
+    }
 }
 PPC_NATIVE_OVERRIDE_VOID(801c5570, GX__Begin_8016f0f0, (uint32_t t, uint32_t vf, uint32_t nv), (t, vf, nv));
 

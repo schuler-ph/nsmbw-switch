@@ -42,6 +42,13 @@ constexpr uint8_t GX_DRAW_POINTS_CMD         = 0xB8;
 
 namespace GxStream {
 
+// NSMBW_GXFAST=1 (default off): the per-draw shortcuts for immediate-mode raw draws in gx_fifo.cpp
+// and gx_vertex.cpp (republish skip, vertex size cache, direct byte gather). Read once.
+inline bool GxFast() {
+    static const bool on = AuroraGxFastLevel() > 0;
+    return on;
+}
+
 // --- Big-endian scalar reads out of a command stream ---------------------
 
 inline uint16_t ReadBE16(const uint8_t* ptr) { return BigEndian::Read16(ptr); }

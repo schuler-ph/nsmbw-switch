@@ -16,6 +16,21 @@ bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, ui
 }
 
 void HleGxState::ResetVertex() {
+    // NSMBW_GXFAST: the first enabled attribute only changes with the descriptor, and every
+    // descriptor change bumps vtxStateGeneration (each GXBegin and raw draw calls this, some twice).
+    if (GxFast() && this == &g_hleGxState) {
+        static bool valid = false;
+        static uint32_t generation = 0;
+        static GXAttr first = GX_VA_NULL;
+        if (!valid || generation != vtxStateGeneration) {
+            first = NextEnabledAttr(GX_VA_PNMTXIDX - 1);
+            generation = vtxStateGeneration;
+            valid = true;
+        }
+        currentAttr = first;
+        currentComp = 0;
+        return;
+    }
     currentAttr = NextEnabledAttr(GX_VA_PNMTXIDX - 1);
     currentComp = 0;
 }
@@ -36,14 +51,80 @@ int HleGxState::GetExpectedCompCount(GXAttr attr, const VtxAttrFmt& fmt) {
     return static_cast<int>(AttrCompCount(attr, fmt, 1u));
 }
 
+// NSMBW_GXFAST_LOG=1 (diagnostics): every 65536 raw draws, how often the republish was skipped and
+// why it was not (first use, HLE state changed, aurora's shadow changed and in which registers, or
+// AuroraResendVtxShadow refused: no GX thread).
+static bool RawPublishLogOn() {
+    static const bool on = std::getenv("NSMBW_GXFAST_LOG") != nullptr;
+    return on;
+}
+
+static void NoteRawPublish(int reason, uint32_t differs) {
+    if (!RawPublishLogOn()) {
+        return;
+    }
+    static uint64_t counts[5]{};
+    static uint64_t wordMiss[7]{};
+    ++counts[reason];
+    for (int i = 0; i < 7; ++i) wordMiss[i] += (differs >> i) & 1u;
+    const uint64_t total = counts[0] + counts[1] + counts[2] + counts[3] + counts[4];
+    if ((total & 0xFFFFu) == 0) {
+        std::fprintf(stderr,
+                     "[gxfast] raw draws %llu: skipped %llu, published: first %llu, hle changed %llu, "
+                     "shadow changed %llu (vcdLo %llu vcdHi %llu vatA %llu vatB %llu vatC %llu nrmType %llu "
+                     "nrms %llu), refused %llu\n",
+                     (unsigned long long)total, (unsigned long long)counts[0], (unsigned long long)counts[1],
+                     (unsigned long long)counts[2], (unsigned long long)counts[3],
+                     (unsigned long long)wordMiss[0], (unsigned long long)wordMiss[1],
+                     (unsigned long long)wordMiss[2], (unsigned long long)wordMiss[3],
+                     (unsigned long long)wordMiss[4], (unsigned long long)wordMiss[5],
+                     (unsigned long long)wordMiss[6], (unsigned long long)counts[4]);
+    }
+}
+
 static void ApplyAuroraVtxStateForRawBegin(GXVtxFmt fmt) {
     // KNOWN DIVERGENCE: this is the only publish site with includeNbt=true, so it also
     // publishes GX_VA_NBT after GX_VA_NRM, which makes aurora's SETVAT fall-through clobber the
     // NRM VAT with the default. Raw-FIFO geometry renders correctly with it; do not "fix" without
     // an in-race A/B run.
-    PublishAuroraVtxState(fmt, AuroraVtxPublishOptions{/*includeNbt=*/true,
-                                                       /*fmtLoopFirst=*/0,
-                                                       /*fmtLoopLast=*/25});
+    constexpr AuroraVtxPublishOptions kOptions{/*includeNbt=*/true, /*fmtLoopFirst=*/0, /*fmtLoopLast=*/25};
+    if (!GxFast() || fmt >= GX_MAX_VTXFMT) {
+        PublishAuroraVtxState(fmt, kOptions);
+        return;
+    }
+    // NSMBW_GXFAST: the publish is a pure function of the HLE descriptor and format row (unchanged
+    // while vtxStateGeneration is) and of aurora's shadow registers, and applying it twice changes
+    // nothing. So when the HLE state is the one last published for this format and aurora's shadow
+    // is still exactly what that publish left, the 46 setter calls would only mark VCD/VAT dirty
+    // (GX thread: aurora cannot compare against decoded state), which AuroraResendVtxShadow does
+    // directly; the FIFO then gets the same re-sent registers as before. Anything else that went
+    // through aurora's setters in between (the other publish sites, GXClearVtxDesc, ...) shows up as
+    // a changed shadow; lists that change decoded state behind the shadow are covered because the
+    // registers are still re-sent on every draw.
+    struct Published {
+        bool valid = false;
+        uint32_t generation = 0;
+        uint32_t shadow[7]{};
+    };
+    static Published published[GX_MAX_VTXFMT];
+    Published& last = published[fmt];
+    if (last.valid && last.generation == g_hleGxState.vtxStateGeneration &&
+        AuroraResendVtxShadow(fmt, last.shadow)) {
+        NoteRawPublish(0, 0);
+        return;
+    }
+    if (RawPublishLogOn()) {
+        uint32_t now[7];
+        AuroraGetVtxShadow(fmt, now);
+        uint32_t differs = 0;
+        for (int i = 0; i < 7; ++i) differs |= (now[i] != last.shadow[i] ? 1u : 0u) << i;
+        NoteRawPublish(!last.valid ? 1 : last.generation != g_hleGxState.vtxStateGeneration ? 2 : differs ? 3 : 4,
+                       differs);
+    }
+    PublishAuroraVtxState(fmt, kOptions);
+    last.valid = true;
+    last.generation = g_hleGxState.vtxStateGeneration;
+    AuroraGetVtxShadow(fmt, last.shadow);
 }
 
 // There is deliberately no indexed-aurora path here. Immediate-mode indexed
@@ -56,7 +137,7 @@ static uint32_t GetDirectAttrByteSizeForFifo(GXAttr attr, const VtxAttrFmt& fmt)
     return DirectAttrByteSize(attr, fmt, /*matrixAttrIsOneByte=*/true, /*fallbackComps=*/1u);
 }
 
-static bool TryGetRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
+static bool ComputeRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
     vertexSize = 0;
     if (fmt >= GX_MAX_VTXFMT) {
         return false;
@@ -81,6 +162,29 @@ static bool TryGetRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
     }
 
     return vertexSize != 0;
+}
+
+// NSMBW_GXFAST: remembered per format until the next descriptor or format change (every one bumps
+// vtxStateGeneration), instead of walking all 26 attributes on every GXBegin and FIFO draw.
+static bool TryGetRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
+    if (!GxFast() || fmt >= GX_MAX_VTXFMT) {
+        return ComputeRawDirectFifoVertexSize(fmt, vertexSize);
+    }
+    struct Entry {
+        bool valid = false;
+        bool ok = false;
+        uint32_t generation = 0;
+        uint32_t size = 0;
+    };
+    static Entry cache[GX_MAX_VTXFMT];
+    Entry& entry = cache[fmt];
+    if (!entry.valid || entry.generation != g_hleGxState.vtxStateGeneration) {
+        entry.ok = ComputeRawDirectFifoVertexSize(fmt, entry.size);
+        entry.generation = g_hleGxState.vtxStateGeneration;
+        entry.valid = true;
+    }
+    vertexSize = entry.size;
+    return entry.ok;
 }
 
 static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetBytes, GXPrimitive prim,
@@ -418,6 +522,26 @@ void HleFifoWrite(u32 val, uint32_t sizeBytes) {
     }
     if (g_hleGxState.rawBegin) {
         const uint32_t count = sizeBytes == 0 ? 4u : std::min<uint32_t>(sizeBytes, 4u);
+        auto& s = g_hleGxState;
+        // NSMBW_GXFAST: a store that fits in the open draw goes straight into the packet (big-endian,
+        // as below), not through a byte array and a library memcpy per float.
+        if (GxFast() && s.rawExpected - s.rawFilled >= count) {
+            uint8_t* dst = s.rawPacket.data() + s.rawFilled;
+            if (count == 4u) {
+                BigEndian::Write32(dst, val);
+            } else if (count == 2u) {
+                BigEndian::Write16(dst, static_cast<uint16_t>(val));
+            } else {
+                for (uint32_t i = 0; i < count; ++i) {
+                    dst[i] = static_cast<uint8_t>(val >> (8u * (count - 1u - i)));
+                }
+            }
+            s.rawFilled += count;
+            if (s.rawFilled == s.rawExpected) {
+                RawBeginFinish();
+            }
+            return;
+        }
         uint8_t bytes[4];
         for (uint32_t i = 0; i < count; ++i) {
             bytes[i] = static_cast<uint8_t>(val >> (8u * (count - 1u - i)));

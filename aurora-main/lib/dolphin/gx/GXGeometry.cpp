@@ -3,6 +3,8 @@
 #include "dolphin/gd/GDGeometry.h"
 #include "../../gx/fifo.hpp"
 
+#include <cstdlib>
+
 static inline void SETVCDATTR(GXAttr attr, GXAttrType type) {
   switch (attr) {
   case GX_VA_PNMTXIDX:
@@ -478,4 +480,38 @@ extern "C" void AuroraGetVtxFormatRegs(uint32_t fmt, uint32_t out[6]) {
   out[3] = fmt < 8 ? __gx->vatB[fmt] : 0;
   out[4] = fmt < 8 ? __gx->vatC[fmt] : 0;
   out[5] = static_cast<uint32_t>(__gx->nrmType);
+}
+
+extern "C" void AuroraGetVtxShadow(uint32_t fmt, uint32_t out[7]) {
+  AuroraGetVtxFormatRegs(fmt, out);
+  out[6] = static_cast<uint32_t>(__gx->hasNrms) | (static_cast<uint32_t>(__gx->hasBiNrms) << 8);
+}
+
+// NSMBW_GXFAST: a full republish (GXSetVtxDesc for every attribute, GXSetVtxAttrFmt for every row of
+// `fmt`) of HLE state that has not changed since the last one leaves a shadow that already equals its
+// result unchanged (each call sets its fields to the same values), so all it does with the GX thread
+// is mark VCD and VAT[fmt] dirty (AuroraVtxDescDiffers/AuroraVtxAttrFmtDiffers answer "differs").
+// Without the GX thread the setters compare against the decoded state instead, which this cannot see,
+// so the caller has to take the full path there.
+extern "C" bool AuroraResendVtxShadow(uint32_t fmt, const uint32_t expect[7]) {
+  if (fmt >= GX_MAX_VTXFMT || !aurora::gx::fifo::threaded() || aurora::gx::fifo::in_display_list()) {
+    return false;
+  }
+  if (__gx->vcdLo != expect[0] || __gx->vcdHi != expect[1] || __gx->vatA[fmt] != expect[2] ||
+      __gx->vatB[fmt] != expect[3] || __gx->vatC[fmt] != expect[4] ||
+      static_cast<uint32_t>(__gx->nrmType) != expect[5] ||
+      (static_cast<uint32_t>(__gx->hasNrms) | (static_cast<uint32_t>(__gx->hasBiNrms) << 8)) != expect[6]) {
+    return false;
+  }
+  __gx->dirtyState |= 8 | 0x10;
+  __gx->dirtyVAT |= static_cast<u8>(1 << fmt);
+  return true;
+}
+
+extern "C" int AuroraGxFastLevel(void) {
+  static const int level = [] {
+    const char* value = std::getenv("NSMBW_GXFAST");
+    return value != nullptr ? std::atoi(value) : 0;
+  }();
+  return level;
 }
