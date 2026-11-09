@@ -280,6 +280,13 @@ struct FrameWorkerStats {
   std::atomic<uint64_t> waitBeginNanos{0};
   std::atomic<uint64_t> prepareNanos{0};
   std::atomic<uint64_t> producerNanos{0};  // nosealed: seal + prepare inside aurora_end_frame
+  // GPU completion of each frame's last submit, seen through Queue::OnSubmittedWorkDone. The
+  // callback runs at the next ProcessEvents (after_submit once per frame, and every <= 1 ms while
+  // begin_frame() waits for a staging map), so these are upper bounds with that granularity.
+  std::atomic<uint64_t> gpuDoneCount{0};
+  std::atomic<uint64_t> gpuLatencyNanos{0};   // final submit -> observed completion
+  std::atomic<uint64_t> gpuIntervalNanos{0};  // observed completion -> next observed completion
+  std::atomic<int64_t> gpuLastDoneNanos{0};
 };
 FrameWorkerStats g_frameWorkerStats;
 constexpr uint64_t kFrameWorkerLogCycles = 300;
@@ -1825,6 +1832,25 @@ std::vector<PresentationJob> encode_sealed_frame(gfx::SealedFrame& sealedFrame, 
       .interpolated = false,
   });
   submitEncodedSlot(encoder);
+  {
+    // NSMBW: GPU completion of this frame (see FrameWorkerStats).
+    const auto submitted = std::chrono::steady_clock::now();
+    g_queue.OnSubmittedWorkDone(
+        wgpu::CallbackMode::AllowSpontaneous, [submitted](wgpu::QueueWorkDoneStatus status, wgpu::StringView) {
+          if (status != wgpu::QueueWorkDoneStatus::Success) {
+            return;
+          }
+          const auto done = std::chrono::steady_clock::now();
+          const int64_t doneNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(done.time_since_epoch()).count();
+          const int64_t lastNanos = g_frameWorkerStats.gpuLastDoneNanos.exchange(doneNanos, std::memory_order_relaxed);
+          g_frameWorkerStats.gpuLatencyNanos.fetch_add(nanos_between(submitted, done), std::memory_order_relaxed);
+          if (lastNanos != 0 && doneNanos > lastNanos) {
+            g_frameWorkerStats.gpuIntervalNanos.fetch_add(static_cast<uint64_t>(doneNanos - lastNanos),
+                                                          std::memory_order_relaxed);
+          }
+          g_frameWorkerStats.gpuDoneCount.fetch_add(1, std::memory_order_relaxed);
+        });
+  }
 
   // A group that finished encoding past its anchor slides forward by whole display periods, never
   // per slot. The cursor keeps two groups off one anchor, which bursts then holds for a period.
@@ -1901,7 +1927,8 @@ void log_frame_worker_stats() {
     return;
   }
   struct Snapshot {
-    uint64_t seal, encode, publish, waitBegin, prepare, producer, mapWait, mapFrames, begins;
+    uint64_t seal, encode, publish, waitBegin, prepare, producer, mapWait, mapFrames, begins, gpuDone, gpuLatency,
+        gpuInterval;
   };
   static Snapshot s_last{};
   Snapshot now{};
@@ -1912,9 +1939,19 @@ void log_frame_worker_stats() {
   now.prepare = g_frameWorkerStats.prepareNanos.load(std::memory_order_relaxed);
   now.producer = g_frameWorkerStats.producerNanos.load(std::memory_order_relaxed);
   gfx::staging_map_wait_stats(now.mapWait, now.mapFrames, now.begins);
+  now.gpuDone = g_frameWorkerStats.gpuDoneCount.load(std::memory_order_relaxed);
+  now.gpuLatency = g_frameWorkerStats.gpuLatencyNanos.load(std::memory_order_relaxed);
+  now.gpuInterval = g_frameWorkerStats.gpuIntervalNanos.load(std::memory_order_relaxed);
   const auto avgMs = [&](uint64_t nowValue, uint64_t lastValue) {
     return static_cast<double>(nowValue - lastValue) / 1e6 / static_cast<double>(kFrameWorkerLogCycles);
   };
+  const uint64_t gpuFrames = now.gpuDone - s_last.gpuDone;
+  const auto gpuAvgMs = [&](uint64_t nowValue, uint64_t lastValue) {
+    return gpuFrames == 0 ? 0.0 : static_cast<double>(nowValue - lastValue) / 1e6 / static_cast<double>(gpuFrames);
+  };
+  Log.info("GPU frames ({}): {} completed, submit->done {:.2f} ms avg, done->done {:.2f} ms avg",
+           no_sealed_mode() ? "nosealed" : "worker", gpuFrames, gpuAvgMs(now.gpuLatency, s_last.gpuLatency),
+           gpuAvgMs(now.gpuInterval, s_last.gpuInterval));
   Log.info("Frame worker ({}): {} cycles, avg ms seal {:.2f} encode {:.2f} publish {:.2f} wait-begin {:.2f} "
            "prepare {:.2f}; producer end_frame {:.2f}; staging map wait {:.2f} ms avg in {} of {} frame begins",
            no_sealed_mode() ? "nosealed" : "worker", cycles, avgMs(now.seal, s_last.seal),

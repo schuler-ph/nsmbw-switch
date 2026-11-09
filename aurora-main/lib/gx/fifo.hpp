@@ -96,7 +96,8 @@ void sync_if_threaded();
 // KiB, default 16), copysrc (GXSetTexCopySrc without a sync), drawdone (GXDrawDone hands off and
 // returns), overlap (frame worker encodes after SEALED, like NSMBW_OVERLAP_ENCODE=1), nosealed (the
 // producer seals the frame and prepares the next one inside aurora_end_frame, so the GX thread never
-// waits for the frame worker's SEALED phase; see no_sealed_wait()).
+// waits for the frame worker's SEALED phase; see no_sealed_wait()), slots4 (four staging slots
+// instead of three, so a frame begin waits for the GPU to finish frame N-3 rather than N-2).
 bool handoff_option(const char* flag);
 // "nosealed": aurora_end_frame() seals the finished frame and prepares the next one on the calling
 // thread, with the GX thread idle; the frame worker only encodes and presents. The decoder then

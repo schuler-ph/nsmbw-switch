@@ -1,6 +1,7 @@
 #include "common.hpp"
 #include "staging_map.hpp"
 #include "../gx/shader_info.hpp"
+#include "../gx/fifo.hpp"
 
 #include "clear.hpp"
 #include "depth_peek.hpp"
@@ -128,9 +129,16 @@ wgpu::Buffer g_vertexBuffer;
 wgpu::Buffer g_uniformBuffer;
 wgpu::Buffer g_indexBuffer;
 wgpu::Buffer g_storageBuffer;
-constexpr size_t FrameSlotCount = 3;
-static std::array<wgpu::Buffer, FrameSlotCount> g_stagingBuffers;
+// NSMBW: three staging slots as always; NSMBW_GX_HANDOFF=slots4 adds a fourth, which lets the GPU
+// run one more frame behind before begin_frame() has to wait for a slot's map (frame_slot_count()).
+constexpr size_t MaxFrameSlotCount = 4;
+constexpr size_t FrameSlotCount = MaxFrameSlotCount;
+static std::array<wgpu::Buffer, MaxFrameSlotCount> g_stagingBuffers;
 static size_t currentStagingBuffer = 0;
+static size_t frame_slot_count() noexcept {
+  static const size_t count = gx::fifo::handoff_option("slots4") ? 4 : 3;
+  return count;
+}
 static StagingMapState s_mappingState;
 static wgpu::Limits g_cachedLimits;
 // Advanced once per logical frame in the seal prologue, under the renderer GPU mutex and with the
@@ -929,7 +937,7 @@ void initialize() {
                "Shared Index Buffer");
   createBuffer(g_storageBuffer, wgpu::BufferUsage::Storage | wgpu::BufferUsage::CopyDst, StorageBufferSize,
                "Shared Storage Buffer");
-  for (int i = 0; i < g_stagingBuffers.size(); ++i) {
+  for (size_t i = 0; i < frame_slot_count(); ++i) {
     const auto label = fmt::format("Staging Buffer {}", i);
     createBuffer(g_stagingBuffers[i], wgpu::BufferUsage::MapWrite | wgpu::BufferUsage::CopySrc, StagingBufferSize,
                  label.c_str());
@@ -1205,7 +1213,7 @@ void abort_frame() noexcept {
     gx::drop_pending_frame_interpolation_uniforms();
     g_stagingBuffers[currentStagingBuffer].Unmap();
     s_mappingState.reset();
-    currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
+    currentStagingBuffer = (currentStagingBuffer + 1) % frame_slot_count();
     map_staging_buffer();
   }
   recycle_render_passes(g_renderPasses);
@@ -1279,7 +1287,7 @@ static void end_batch_impl(const wgpu::CommandEncoder& cmd, bool advanceFrame) {
       g_textureUpload.release();
     }
   }
-  currentStagingBuffer = (currentStagingBuffer + 1) % g_stagingBuffers.size();
+  currentStagingBuffer = (currentStagingBuffer + 1) % frame_slot_count();
   map_staging_buffer();
   g_currentRenderPass = UINT32_MAX;
   for (auto& array : gx::g_gxState.arrays) {
