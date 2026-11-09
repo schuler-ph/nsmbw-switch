@@ -1,0 +1,550 @@
+diff --git a/src/dawn/native/deko3d/CommandBufferDeko3d.cpp b/src/dawn/native/deko3d/CommandBufferDeko3d.cpp
+index 5b629ae..3fc8c78 100644
+--- a/src/dawn/native/deko3d/CommandBufferDeko3d.cpp
++++ b/src/dawn/native/deko3d/CommandBufferDeko3d.cpp
+@@ -347,7 +347,17 @@ MaybeError CommandBuffer::RecordCommands(DkCmdBuf cmdBuf) {
+                     GetDevice(), cmd, [&](TextureBase* texture, const SubresourceRange& range) {
+                         return ToBackend(texture)->EnsureSubresourceContentInitialized(range);
+                     }));
++                uint8_t gxIndex = 0xFF;
++                const Device::TimingTag passTag =
++                    Device::GetGpuOptions().timing ? Device::TagForPassLabel(cmd->label, &gxIndex)
++                                                   : Device::TimingTag::OtherPass;
++                device->TimingMark(cmdBuf, Device::TimingTag::Other);
+                 DAWN_TRY(RecordRenderPass(cmdBuf, cmd, nextRenderPassNumber));
++                if (Device::GetGpuOptions().passBarrier) {
++                    // A/B "passbarrier": what the missing pass-to-pass synchronisation would cost.
++                    dkCmdBufBarrier(cmdBuf, DkBarrier_Fragments, DkInvalidateFlags_Image);
++                }
++                device->TimingMark(cmdBuf, passTag, gxIndex);
+                 nextRenderPassNumber++;
+                 break;
+             }
+@@ -362,11 +372,26 @@ MaybeError CommandBuffer::RecordCommands(DkCmdBuf cmdBuf) {
+                 DAWN_TRY(source->EnsureDataInitialized());
+                 DAWN_TRY(destination->EnsureDataInitializedAsDestination(copy->destinationOffset,
+                                                                          copy->size));
+-                // The source's CPU view reflects every write recorded before this point only if it
+-                // is not written by GPU work in this same pass; Dawn's copy sources are mapped or
+-                // staging buffers, so snapshot them here.
+-                device->RecordBufferWrite(destination->GetGpuAddr() + copy->destinationOffset,
+-                                          source->GetCpuAddr() + copy->sourceOffset, copy->size);
++                if (Device::GetGpuOptions().gpuCopy && copy->size <= UINT32_MAX) {
++                    // A/B "gpucopy": copy on the GPU timeline from the source's GPU address. Dawn
++                    // tracks the source's usage, so a staging buffer is not remapped before this
++                    // submit finishes, and GPU-written sources are read at the right time.
++                    device->TimingMark(cmdBuf, Device::TimingTag::Other);
++                    device->BeforeCopyEngine(cmdBuf);
++                    dkCmdBufCopyBuffer(cmdBuf, source->GetGpuAddr() + copy->sourceOffset,
++                                       destination->GetGpuAddr() + copy->destinationOffset,
++                                       static_cast<uint32_t>(copy->size));
++                    device->AfterCopyEngine(cmdBuf);
++                    device->TimingMark(cmdBuf, Device::TimingTag::BufferCopy);
++                    device->TimingCountGpuCopy(copy->size);
++                } else {
++                    // The source's CPU view reflects every write recorded before this point only
++                    // if it is not written by GPU work in this same pass; Dawn's copy sources are
++                    // mapped or staging buffers, so snapshot them here.
++                    device->RecordBufferWrite(destination->GetGpuAddr() + copy->destinationOffset,
++                                              source->GetCpuAddr() + copy->sourceOffset,
++                                              copy->size);
++                }
+                 if (kDeko3dTrace) {
+                     char what[160];
+                     std::snprintf(what, sizeof(what), "CopyBufferToBuffer size=%llu srcOff=%llu dstOff=%llu",
+@@ -426,9 +451,11 @@ MaybeError CommandBuffer::RecordCommands(DkCmdBuf cmdBuf) {
+                         buffer->GetGpuAddr() + copy->destination.offset + bytesPerImage * layer,
+                         // Strides in bytes: bytes per row, bytes per image.
+                         static_cast<uint32_t>(bytesPerRow), static_cast<uint32_t>(bytesPerImage)};
++                    device->TimingMark(cmdBuf, Device::TimingTag::Other);
+                     device->BeforeCopyEngine(cmdBuf);
+                     dkCmdBufCopyImageToBuffer(cmdBuf, &view, &rect, &dst, 0);
+                     device->AfterCopyEngine(cmdBuf);
++                    device->TimingMark(cmdBuf, Device::TimingTag::TextureReadback);
+                 }
+                 buffer->TrackUsage();
+                 break;
+@@ -467,9 +494,11 @@ MaybeError CommandBuffer::RecordCommands(DkCmdBuf cmdBuf) {
+                                            size.width, size.height, depth};
+                     DkImageRect dstRect = {dstOrigin.x, dstOrigin.y, dstIs3D ? dstOrigin.z : 0,
+                                            size.width, size.height, depth};
++                    device->TimingMark(cmdBuf, Device::TimingTag::Other);
+                     device->BeforeCopyEngine(cmdBuf);
+                     dkCmdBufCopyImage(cmdBuf, &srcView, &srcRect, &dstView, &dstRect, 0);
+                     device->AfterCopyEngine(cmdBuf);
++                    device->TimingMark(cmdBuf, Device::TimingTag::TextureCopy);
+                 }
+                 break;
+             }
+@@ -817,6 +846,9 @@ MaybeError CommandBuffer::RecordRenderPass(DkCmdBuf cmdBuf,
+         switch (type) {
+             case Command::EndRenderPass: {
+                 mCommands.NextCommand<EndRenderPassCmd>();
++                if (Device::GetGpuOptions().timing) {
++                    ToBackend(GetDevice())->TimingCountPass(diagDraws);
++                }
+                 if (Device* dev = ToBackend(GetDevice()); dev->mDebugDumpFrame &&
+                     renderPass->attachmentState->GetSampleCount() == 1) {
+                     for (auto i : renderPass->attachmentState->GetColorAttachmentsMask()) {
+diff --git a/src/dawn/native/deko3d/DeviceDeko3d.cpp b/src/dawn/native/deko3d/DeviceDeko3d.cpp
+index a0971c0..9917640 100644
+--- a/src/dawn/native/deko3d/DeviceDeko3d.cpp
++++ b/src/dawn/native/deko3d/DeviceDeko3d.cpp
+@@ -224,6 +224,14 @@ void Device::DestroyImpl(DestroyReason reason) {
+         }
+         list->clear();
+     }
++    for (DkMemBlock block : mTimingFreeBlocks) {
++        dkMemBlockDestroy(block);
++    }
++    mTimingFreeBlocks.clear();
++    if (mTimingPending.block != nullptr) {
++        dkMemBlockDestroy(mTimingPending.block);
++        mTimingPending = TimingBlock{};
++    }
+     for (DkMemBlock* block : {&mImageDescriptorMemory, &mSamplerDescriptorMemory}) {
+         if (*block != nullptr) {
+             dkMemBlockDestroy(*block);
+@@ -298,10 +306,197 @@ DkCmdBuf Device::GetPendingCommandBuffer() {
+         dkCmdBufBindSamplerDescriptorSet(cmdBuf, dkMemBlockGetGpuAddr(mSamplerDescriptorMemory),
+                                          kMaxSamplerDescriptors);
+         if (kDeko3dTrace) TraceFlush("after descriptor set bind");
++        TimingMark(cmdBuf, TimingTag::Start);
+     }
+     return cmdBuf;
+ }
+ 
++// GPU timing (NSMBW_GPU_TIMING)
++
++namespace {
++bool HasListToken(std::string_view list, std::string_view name);
++}  // namespace
++
++// static
++const Device::GpuOptions& Device::GetGpuOptions() {
++    static const GpuOptions options = [] {
++        const char* env = std::getenv("NSMBW_GPU_TIMING");
++        const std::string_view list = env != nullptr ? env : "";
++        GpuOptions o;
++        o.timing = HasListToken(list, "1");
++        o.aniso1 = HasListToken(list, "aniso1");
++        o.gpuCopy = HasListToken(list, "gpucopy");
++        o.passBarrier = HasListToken(list, "passbarrier");
++        std::fprintf(stderr,
++                     "[gpu-timing] options \"%s\": timing=%d aniso1=%d gpucopy=%d passbarrier=%d\n",
++                     env != nullptr ? env : "", int(o.timing), int(o.aniso1), int(o.gpuCopy),
++                     int(o.passBarrier));
++        return o;
++    }();
++    return options;
++}
++
++// static
++Device::TimingTag Device::TagForPassLabel(const std::string& label, uint8_t* gxIndex) {
++    *gxIndex = 0xFF;
++    std::string_view l = label;
++    constexpr std::string_view kGx = "Render pass";
++    if (l.substr(0, kGx.size()) == kGx) {
++        std::string_view rest = l.substr(kGx.size());
++        while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
++        uint32_t index = 0;
++        bool digits = false;
++        while (!rest.empty() && rest.front() >= '0' && rest.front() <= '9') {
++            index = index * 10 + uint32_t(rest.front() - '0');
++            rest.remove_prefix(1);
++            digits = true;
++        }
++        *gxIndex = digits ? uint8_t(std::min<uint32_t>(index, kTimingGxSlots - 1))
++                          : uint8_t(kTimingGxSlots - 1);
++        return TimingTag::GxPass;
++    }
++    if (l.find("TexCopyConv") != std::string_view::npos) return TimingTag::ConvPass;
++    if (l.find("TexPaletteConv") != std::string_view::npos) return TimingTag::PalettePass;
++    if (l.find("snapshot pass") != std::string_view::npos) return TimingTag::SnapshotPass;
++    if (l.find("ImGui") != std::string_view::npos) return TimingTag::ImGuiPass;
++    if (l.find("Presentation copy") != std::string_view::npos) return TimingTag::PresentPass;
++    return TimingTag::OtherPass;
++}
++
++void Device::TimingMark(DkCmdBuf cmdBuf, TimingTag tag, uint8_t index) {
++    if (!GetGpuOptions().timing) {
++        return;
++    }
++    if (mTimingPending.block == nullptr) {
++        if (!mTimingFreeBlocks.empty()) {
++            mTimingPending.block = mTimingFreeBlocks.back();
++            mTimingFreeBlocks.pop_back();
++        } else {
++            DkMemBlockMaker maker;
++            dkMemBlockMakerDefaults(&maker, mDkDevice,
++                                    AlignUp(kTimingMarksPerSubmit * 16, DK_MEMBLOCK_ALIGNMENT));
++            maker.flags = DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached;
++            mTimingPending.block = dkMemBlockCreate(&maker);
++            if (mTimingPending.block == nullptr) {
++                mTimingWindow.droppedMarks++;
++                return;
++            }
++        }
++        mTimingPending.marks.clear();
++    }
++    if (mTimingPending.marks.size() >= kTimingMarksPerSubmit) {
++        mTimingWindow.droppedMarks++;
++        return;
++    }
++    const DkGpuAddr addr =
++        dkMemBlockGetGpuAddr(mTimingPending.block) + mTimingPending.marks.size() * 16;
++    dkCmdBufReportCounter(cmdBuf, DkCounter_Timestamp, addr);
++    mTimingPending.marks.emplace_back(uint8_t(tag), index);
++}
++
++void Device::TimingOnPresent() {
++    if (GetGpuOptions().timing) {
++        mTimingWindow.presents++;
++    }
++}
++
++void Device::TimingCountSampler(bool anisotropic) {
++    mSamplersCreated++;
++    if (anisotropic) {
++        mSamplersAnisotropic++;
++    }
++}
++
++void Device::TimingProcess(const TimingBlock& timing) {
++    const size_t count = timing.marks.size();
++    if (timing.block == nullptr || count < 2) {
++        return;
++    }
++    // A DkCounter_Timestamp report is {counter value, timestamp}, 8 bytes each.
++    const uint64_t* reports = static_cast<const uint64_t*>(dkMemBlockGetCpuAddr(timing.block));
++    auto ts = [&](size_t i) { return reports[i * 2 + 1]; };
++    TimingWindow& w = mTimingWindow;
++    const uint64_t first = ts(0);
++    if (w.firstTicks == 0) {
++        w.firstTicks = first;
++    }
++    if (mTimingLastEndTicks != 0 && first > mTimingLastEndTicks) {
++        w.idleTicks += first - mTimingLastEndTicks;
++    }
++    uint64_t prev = first;
++    for (size_t i = 1; i < count; ++i) {
++        const uint64_t t = std::max(ts(i), prev);
++        const uint64_t d = t - prev;
++        prev = t;
++        const auto [tag, index] = timing.marks[i];
++        w.tagTicks[tag < size_t(TimingTag::Count) ? tag : size_t(TimingTag::Other)] += d;
++        if (tag == uint8_t(TimingTag::GxPass) && index < kTimingGxSlots) {
++            w.gxTicks[index] += d;
++            w.gxCount[index]++;
++        }
++    }
++    w.busyTicks += prev - first;
++    w.marks += count;
++    w.submits++;
++    mTimingLastEndTicks = prev;
++    if (mTimingWindows == 0 && w.submits == 1) {
++        std::fprintf(stderr,
++                     "[gpu-timing] first report raw: value=%llu ts=%llu, now=%llu, %zu marks\n",
++                     (unsigned long long)reports[0], (unsigned long long)first,
++                     (unsigned long long)dkDeviceGetCurrentTimestamp(mDkDevice), count);
++    }
++    if (w.presents >= 300) {
++        TimingReport(prev);
++    }
++}
++
++void Device::TimingReport(uint64_t lastTicks) {
++    TimingWindow& w = mTimingWindow;
++    const double frames = double(std::max<uint64_t>(w.presents, 1));
++    auto ms = [&](uint64_t ticks) { return double(dkTimestampToNs(ticks)) / 1e6 / frames; };
++    const double wallMs = double(dkTimestampToNs(lastTicks - w.firstTicks)) / 1e6;
++    const double cpuTicksToMs = 1000.0 / double(armGetSystemTickFreq());
++    static const char* const kNames[] = {"start", "other", "gx",   "conv",  "pal",  "snap",   "imgui",
++                                         "pres",  "opass", "bcopy", "tupl", "t2t", "t2b"};
++    char tags[512];
++    int n = 0;
++    for (size_t i = 1; i < size_t(TimingTag::Count); ++i) {
++        n += std::snprintf(tags + n, sizeof(tags) - n, " %s=%.2f", kNames[i], ms(w.tagTicks[i]));
++    }
++    // The three most expensive GX passes by index (per frame they run in).
++    char gx[256];
++    int g = 0;
++    bool used[kTimingGxSlots] = {};
++    for (int k = 0; k < 4; ++k) {
++        int best = -1;
++        for (uint32_t i = 0; i < kTimingGxSlots; ++i) {
++            if (!used[i] && w.gxCount[i] != 0 && (best < 0 || w.gxTicks[i] > w.gxTicks[best])) {
++                best = int(i);
++            }
++        }
++        if (best < 0) break;
++        used[best] = true;
++        g += std::snprintf(gx + g, sizeof(gx) - g, " p%d=%.2fms/%.2f", best, ms(w.gxTicks[best]),
++                           double(w.gxCount[best]) / frames);
++    }
++    gx[g] = '\0';
++    std::fprintf(stderr,
++                 "[gpu-timing] w%llu frames=%llu wall=%.0fms interval=%.2fms busy=%.2f idle=%.2f "
++                 "submits=%.2f passes=%.2f draws=%.1f |%s | gxtop%s | cpu_upload=%.2fms %.0fKB "
++                 "waits=%llu %.2fms gpucopy=%.2f %.0fKB marks=%.0f dropped=%llu samplers=%llu/%llu aniso\n",
++                 (unsigned long long)mTimingWindows, (unsigned long long)w.presents, wallMs,
++                 wallMs / frames, ms(w.busyTicks), ms(w.idleTicks), double(w.submits) / frames,
++                 double(w.passes) / frames, double(w.draws) / frames, tags, gx,
++                 double(w.cpuUploadTicks) * cpuTicksToMs / frames,
++                 double(w.cpuUploadBytes) / 1024.0 / frames, (unsigned long long)w.cpuWaits,
++                 double(w.cpuWaitTicks) * cpuTicksToMs / frames, double(w.gpuCopies) / frames,
++                 double(w.gpuCopyBytes) / 1024.0 / frames, double(w.marks) / frames,
++                 (unsigned long long)w.droppedMarks, (unsigned long long)mSamplersAnisotropic.load(),
++                 (unsigned long long)mSamplersCreated.load());
++    ++mTimingWindows;
++    w = TimingWindow{};
++}
++
+ namespace {
+ // Synchronisation diagnosis, set through AURORA_GFX_FLAGS (sdmc:/switch/nsmbw/gfx_flags.txt):
+ //   dk_copybarrier  full barrier with cache invalidation before and after every copy-engine command
+@@ -329,6 +524,10 @@ bool HasGfxFlag(std::string_view list, std::string_view name) {
+     return false;
+ }
+ 
++bool HasListToken(std::string_view list, std::string_view name) {
++    return HasGfxFlag(list, name);
++}
++
+ const SyncDebug& GetSyncDebug() {
+     static const SyncDebug flags = [] {
+         const char* env = std::getenv("AURORA_GFX_FLAGS");
+@@ -366,6 +565,9 @@ MaybeError Device::SubmitPendingCommands(ExecutionSerial serial) {
+     auto inFlight = std::make_unique<InFlight>();
+     inFlight->serial = serial;
+     if (mHasPendingCommands) {
++        TimingMark(mCmdBuf->cmdBuf, TimingTag::Other);
++        inFlight->timing = std::move(mTimingPending);
++        mTimingPending = TimingBlock{};
+         DkCmdList list = dkCmdBufFinishList(mCmdBuf->cmdBuf);
+         dkQueueSubmitCommands(mDkQueue, list);
+         // The list lives in this command buffer's memory until the fence signals; record the next
+@@ -428,6 +630,11 @@ void Device::ReleaseResourcesUpTo(ExecutionSerial completed) {
+         for (const ImageAllocation& allocation : done->freedImageMemory) {
+             ReleaseImageMemory(allocation);
+         }
++        if (done->timing.block != nullptr) {
++            TimingProcess(done->timing);
++            mTimingFreeBlocks.push_back(done->timing.block);
++            done->timing.block = nullptr;
++        }
+         mCompletedSerial = std::max(mCompletedSerial, done->serial);
+     }
+ }
+@@ -445,6 +652,17 @@ ExecutionSerial Device::PollCompletedSerial() {
+ }
+ 
+ ExecutionSerial Device::WaitForSerial(ExecutionSerial serial, Nanoseconds timeout) {
++    const uint64_t waitStart = GetGpuOptions().timing ? armGetSystemTick() : 0;
++    struct WaitTimer {
++        Device* device;
++        uint64_t start;
++        ~WaitTimer() {
++            if (start != 0) {
++                device->mTimingWindow.cpuWaitTicks += armGetSystemTick() - start;
++                device->mTimingWindow.cpuWaits++;
++            }
++        }
++    } waitTimer{this, waitStart};
+     for (const auto& inFlight : mInFlight) {
+         if (inFlight->serial > serial) {
+             break;
+@@ -720,6 +938,8 @@ void Device::AfterCopyEngine(DkCmdBuf cmdBuf) {
+ void Device::RecordBufferWrite(DkGpuAddr dst, const uint8_t* data, uint64_t size) {
+     DAWN_ASSERT(size % 4 == 0);
+     DkCmdBuf cmdBuf = GetPendingCommandBuffer();
++    const bool timing = GetGpuOptions().timing;
++    const uint64_t cpuStart = timing ? armGetSystemTick() : 0;
+     // Large writes would bloat command memory; stage them in upload memory and copy on the GPU.
+     constexpr uint64_t kInlineLimit = 4096;
+     if (size > kInlineLimit && !GetSyncDebug().inlineWrites) {
+@@ -728,13 +948,30 @@ void Device::RecordBufferWrite(DkGpuAddr dst, const uint8_t* data, uint64_t size
+         MaybeError allocated = AllocateUploadMemory(size, &upload, &uploadAddr);
+         if (allocated.IsSuccess()) {
+             std::memcpy(upload, data, size);
++            if (timing) {
++                mTimingWindow.cpuUploadTicks += armGetSystemTick() - cpuStart;
++                mTimingWindow.cpuUploadBytes += size;
++            }
++            TimingMark(cmdBuf, TimingTag::Other);
+             BeforeCopyEngine(cmdBuf);
+             dkCmdBufCopyBuffer(cmdBuf, uploadAddr, dst, static_cast<uint32_t>(size));
+             AfterCopyEngine(cmdBuf);
++            TimingMark(cmdBuf, TimingTag::BufferCopy);
+             return;
+         }
+         allocated.AcquireError();
+     }
++    struct InlineTimer {
++        Device* device;
++        uint64_t start;
++        uint64_t bytes;
++        ~InlineTimer() {
++            if (start != 0) {
++                device->mTimingWindow.cpuUploadTicks += armGetSystemTick() - start;
++                device->mTimingWindow.cpuUploadBytes += bytes;
++            }
++        }
++    } inlineTimer{this, cpuStart, size};
+     constexpr uint64_t kMaxChunk = 0x7FFC;
+     while (size != 0) {
+         const uint32_t chunk = static_cast<uint32_t>(std::min(size, kMaxChunk));
+@@ -1069,9 +1306,11 @@ MaybeError Device::RecordTextureUpload(const TextureCopy& dst,
+                             copySizePixels.width, copySizePixels.height, imagesPerCopy};
+         (void)rowsPerImage;
+         DkCmdBuf cmdBuf = GetPendingCommandBuffer();
++        TimingMark(cmdBuf, TimingTag::Other);
+         BeforeCopyEngine(cmdBuf);
+         dkCmdBufCopyBufferToImage(cmdBuf, &copyBuf, &view, &rect, 0);
+         AfterCopyEngine(cmdBuf);
++        TimingMark(cmdBuf, TimingTag::TextureUpload);
+     }
+     return {};
+ }
+diff --git a/src/dawn/native/deko3d/DeviceDeko3d.h b/src/dawn/native/deko3d/DeviceDeko3d.h
+index e88350c..cdeeb0f 100644
+--- a/src/dawn/native/deko3d/DeviceDeko3d.h
++++ b/src/dawn/native/deko3d/DeviceDeko3d.h
+@@ -37,6 +37,8 @@
+ #include <deque>
+ #include <memory>
+ #include <mutex>
++#include <string>
++#include <utility>
+ #include <vector>
+ 
+ #include "src/dawn/native/Device.h"
+@@ -112,6 +114,48 @@ class Device final : public DeviceBase {
+     // which hung the GPU (timeout) on hardware. `size` must be a multiple of 4, as WebGPU requires.
+     void RecordBufferWrite(DkGpuAddr dst, const uint8_t* data, uint64_t size);
+ 
++    // NSMBW_GPU_TIMING (comma list, read once). "1" brackets render passes and copies with
++    // bottom-of-pipe GPU timestamps and logs a summary every 300 presents; the other tokens are
++    // A/B switches: "aniso1" (samplers without anisotropy), "gpucopy" (CopyBufferToBuffer as a
++    // GPU copy instead of a CPU snapshot at record time), "passbarrier" (fragment barrier plus
++    // texture cache invalidation after every render pass).
++    struct GpuOptions {
++        bool timing = false;
++        bool aniso1 = false;
++        bool gpuCopy = false;
++        bool passBarrier = false;
++    };
++    static const GpuOptions& GetGpuOptions();
++    // A mark closes the GPU time segment since the previous mark and books it on `tag`.
++    enum class TimingTag : uint8_t {
++        Start,
++        Other,
++        GxPass,
++        ConvPass,
++        PalettePass,
++        SnapshotPass,
++        ImGuiPass,
++        PresentPass,
++        OtherPass,
++        BufferCopy,
++        TextureUpload,
++        TextureCopy,
++        TextureReadback,
++        Count,
++    };
++    static TimingTag TagForPassLabel(const std::string& label, uint8_t* gxIndex);
++    void TimingMark(DkCmdBuf cmdBuf, TimingTag tag, uint8_t index = 0xFF);
++    void TimingOnPresent();
++    void TimingCountPass(uint32_t draws) {
++        mTimingWindow.passes++;
++        mTimingWindow.draws += draws;
++    }
++    void TimingCountSampler(bool anisotropic);
++    void TimingCountGpuCopy(uint64_t bytes) {
++        mTimingWindow.gpuCopies++;
++        mTimingWindow.gpuCopyBytes += bytes;
++    }
++
+     // Diagnosis switches (AURORA_GFX_FLAGS, read once): wrap every copy-engine command
+     // (dkCmdBufCopy*) in full barriers (dk_copybarrier) or in submit-and-wait (dk_flushcopies).
+     void BeforeCopyEngine(DkCmdBuf cmdBuf);
+@@ -210,14 +254,51 @@ class Device final : public DeviceBase {
+ 
+     // Upload allocations and destroyed memory referenced by the pending list, and the state of
+     // submitted-but-unfinished lists (by the serial that completes them).
++    // GPU timestamps of one submit: slot i holds the 16-byte report of mark i.
++    struct TimingBlock {
++        DkMemBlock block = nullptr;
++        std::vector<std::pair<uint8_t, uint8_t>> marks;  // tag, GX pass index
++    };
+     struct InFlight {
+         ExecutionSerial serial;
+         std::unique_ptr<CmdBufEntry> cmdBuf;
+         std::vector<DkMemBlock> uploadMemory;
+         std::vector<DkMemBlock> destroyedMemory;
+         std::vector<ImageAllocation> freedImageMemory;
++        TimingBlock timing;
+         DkFence fence;
+     };
++    static constexpr uint32_t kTimingMarksPerSubmit = 4096;
++    static constexpr uint32_t kTimingGxSlots = 16;
++    TimingBlock mTimingPending;
++    std::vector<DkMemBlock> mTimingFreeBlocks;
++    struct TimingWindow {
++        uint64_t presents = 0;
++        uint64_t submits = 0;
++        uint64_t passes = 0;
++        uint64_t draws = 0;
++        uint64_t marks = 0;
++        uint64_t droppedMarks = 0;
++        uint64_t firstTicks = 0;   // GPU timestamp of the window's first submit start
++        uint64_t busyTicks = 0;    // sum of submit spans (first to last mark)
++        uint64_t idleTicks = 0;    // gaps between one submit's end and the next one's start
++        uint64_t tagTicks[size_t(TimingTag::Count)] = {};
++        uint64_t gxTicks[kTimingGxSlots] = {};
++        uint64_t gxCount[kTimingGxSlots] = {};
++        uint64_t cpuUploadTicks = 0;  // CPU time in RecordBufferWrite (snapshot memcpy, push data)
++        uint64_t cpuUploadBytes = 0;
++        uint64_t cpuWaitTicks = 0;    // CPU time blocked in WaitForSerial
++        uint64_t cpuWaits = 0;
++        uint64_t gpuCopies = 0;       // CopyBufferToBuffer done as GPU copies (gpucopy)
++        uint64_t gpuCopyBytes = 0;
++    };
++    TimingWindow mTimingWindow;
++    uint64_t mTimingLastEndTicks = 0;
++    uint64_t mTimingWindows = 0;
++    std::atomic<uint64_t> mSamplersCreated{0};
++    std::atomic<uint64_t> mSamplersAnisotropic{0};
++    void TimingProcess(const TimingBlock& timing);
++    void TimingReport(uint64_t lastTicks);
+     std::vector<DkMemBlock> mPendingUploadMemory;
+     std::vector<DkMemBlock> mPendingDestroyedMemory;
+     std::vector<ImageAllocation> mPendingFreedImageMemory;
+diff --git a/src/dawn/native/deko3d/SamplerDeko3d.cpp b/src/dawn/native/deko3d/SamplerDeko3d.cpp
+index 33e6a8b..40c8d7d 100644
+--- a/src/dawn/native/deko3d/SamplerDeko3d.cpp
++++ b/src/dawn/native/deko3d/SamplerDeko3d.cpp
+@@ -62,6 +62,11 @@ MaybeError Sampler::Initialize(const SamplerDescriptor* descriptor) {
+         dkSampler.compareOp = ToDkCompareOp(descriptor->compare);
+     }
+     dkSampler.maxAnisotropy = static_cast<float>(std::max<uint16_t>(GetMaxAnisotropy(), 1));
++    ToBackend(GetDevice())->TimingCountSampler(dkSampler.maxAnisotropy > 1.0f);
++    if (Device::GetGpuOptions().aniso1) {
++        // A/B "aniso1": filtering without anisotropy (aurora asks for up to 16x).
++        dkSampler.maxAnisotropy = 1.0f;
++    }
+ 
+     DAWN_TRY_ASSIGN(mDescriptorId, ToBackend(GetDevice())->AllocateSamplerDescriptor(dkSampler));
+     return {};
+diff --git a/src/dawn/native/deko3d/SwapChainDeko3d.cpp b/src/dawn/native/deko3d/SwapChainDeko3d.cpp
+index 3b33af7..b065337 100644
+--- a/src/dawn/native/deko3d/SwapChainDeko3d.cpp
++++ b/src/dawn/native/deko3d/SwapChainDeko3d.cpp
+@@ -128,6 +128,7 @@ MaybeError SwapChain::PresentImpl() {
+     if (mAcquiredSlot >= 0) {
+         dkQueuePresentImage(device->GetDkQueue(), mDkSwapchain, mAcquiredSlot);
+         mAcquiredSlot = -1;
++        device->TimingOnPresent();
+     }
+     if (mTexture != nullptr) {
+         mTexture->APIDestroy();
