@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../internal.hpp"
+#include "../webgpu/gpu.hpp"
 
 #include <cstring>
 
@@ -14,6 +15,10 @@ extern bool sInDisplayList;
 extern uint8_t* sDlBuffer;
 extern uint32_t sDlSize;
 extern uint32_t sDlWritePos;
+// threaded(): whether the GX thread is wanted at all (NSMBW_GX_THREAD, the core count), decided
+// once on the first call and read inline from then on.
+extern bool sThreadWanted;
+extern bool sThreadWantedKnown;
 } // namespace detail
 
 void init();
@@ -87,7 +92,20 @@ void drain();
 // game thread carries on producing. Producers that only append commands call flush_async() where
 // they used to drain; anything that reads or writes decoded state directly calls drain() (or
 // sync_if_threaded()) first.
-bool threaded();
+//
+// Inline: every GX setter asks (GXSetVtxDesc alone made the out-of-line version, with its
+// function-static guard, 1.1 % of the game thread on the Switch). Never on OpenGL (ES): its context
+// belongs to one thread, so that renderer runs single-threaded. Off until the renderer is up, too;
+// turning on later is safe, as nothing is left queued then.
+bool thread_wanted_slow();
+inline bool threaded() {
+  const auto backend = webgpu::g_backendType;
+  if (backend == wgpu::BackendType::Undefined || backend == wgpu::BackendType::Null ||
+      backend == wgpu::BackendType::OpenGL || backend == wgpu::BackendType::OpenGLES) {
+    return false;
+  }
+  return detail::sThreadWantedKnown ? detail::sThreadWanted : thread_wanted_slow();
+}
 // Hands what is buffered to the worker once enough has built up (threaded), else drains.
 void flush_async();
 // Waits for the worker to finish everything queued (threaded only; a no-op otherwise).

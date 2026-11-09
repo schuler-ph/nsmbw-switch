@@ -48,6 +48,8 @@ bool sInDisplayList = false;
 uint8_t* sDlBuffer = nullptr;
 uint32_t sDlSize = 0;
 uint32_t sDlWritePos = 0;
+bool sThreadWanted = false;
+bool sThreadWantedKnown = false;
 } // namespace detail
 
 void init() {
@@ -215,27 +217,27 @@ void hand_off() {
 }
 } // namespace
 
-bool threaded() {
-  // On by default when there's a core to spare for it; NSMBW_GX_THREAD=0 or 1 forces it.
-  static const bool wanted = [] {
-    const char* value = std::getenv("NSMBW_GX_THREAD");
-    if (value != nullptr && value[0] != '\0') {
-      return value[0] == '1';
-    }
+// The slow half of threaded() (fifo.hpp): on by default when there's a core to spare for it;
+// NSMBW_GX_THREAD=0 or 1 forces it. Decided once; the game thread is the only caller before the
+// GX thread exists, and the GX thread only exists once this said yes.
+bool thread_wanted_slow() {
+  bool wanted = false;
+  const char* value = std::getenv("NSMBW_GX_THREAD");
+  if (value != nullptr && value[0] != '\0') {
+    wanted = value[0] == '1';
+  } else {
 #if defined(__SWITCH__)
     // Switch: on with the 3 cores homebrew gets. Measured on the hardware (A/B 2026-11-08, same
     // build and clock): title demo 29.8 -> 38.0 FPS, level 45.3 -> 46.2 FPS; the game thread
     // otherwise decodes every GX command itself. Any core besides the guest's is enough.
-    return usable_cores() >= 2;
+    wanted = usable_cores() >= 2;
 #else
-    return usable_cores() >= 4;
+    wanted = usable_cores() >= 4;
 #endif
-  }();
-  // Never on OpenGL (ES): its context belongs to one thread, so that renderer runs single-threaded.
-  // Off until the renderer is up, too; turning on later is safe, as nothing is left queued then.
-  const auto backend = webgpu::g_backendType;
-  return wanted && backend != wgpu::BackendType::Undefined && backend != wgpu::BackendType::Null &&
-         backend != wgpu::BackendType::OpenGL && backend != wgpu::BackendType::OpenGLES;
+  }
+  detail::sThreadWanted = wanted;
+  detail::sThreadWantedKnown = true;
+  return wanted;
 }
 
 void flush_async() {
