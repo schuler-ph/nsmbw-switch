@@ -11,26 +11,49 @@
 //
 // NSMBW_REVERB_COMPARE=1 runs both on every block (the translated result is kept) and logs how far
 // apart they are.
+//
+// NSMBW_REVERB_MT=1 (default off) runs the native block on a worker thread instead of the game
+// thread, bit-exact (same function, same FP control register). The AX aux callback only hands the
+// block over; the result is waited for (Join) before anything can read it or the effect's memory:
+//  - AxDspHle's JoinMix, i.e. before the next AI block is pushed or the next __AXOutNewFrame runs
+//    and before the next DSP command list snapshots the aux buffers it reads back;
+//  - the next UpdateBuffer, and FxReverbHi::Shutdown (also redirected; AxManager::ShutdownEffect
+//    and the destructor reach it through the vtable, before the work buffer can be freed);
+// A block is handed over only when the effect is the last on its bus (nothing in the same callback
+// reads its output) and sends to no other bus. NSMBW_REVERB_MT=check additionally re-runs each
+// handed-over block on the game thread from a snapshot and logs any byte that differs.
 #include "axfx_reverb_native.h"
 
 #include "abi_bridge.h"
 #include "det_clock.h"
+#include "isa/ppc_isa_fpenv.h"
 #include "memory.h"
 #include "runtime_log.h"
 
+#include <aurora/aurora.h>
+
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 extern "C" void func_8026C210(CpuContext* ctx);  // the translated FxReverbHi::UpdateBuffer
+extern "C" void func_8026BED0(CpuContext* ctx);  // the translated FxReverbHi::Shutdown
+#if defined(__SWITCH__)
+extern "C" void SwitchConfigureAudioMixThread();  // src/platform/switch/switch_platform.cpp
+#endif
 
 namespace AxfxReverbNative {
 namespace {
 
 constexpr uint32_t kUpdateBuffer = 0x8026C210u;  // UpdateBuffer__Q34nw4r3snd10FxReverbHi...
+constexpr uint32_t kShutdown = 0x8026BED0u;      // Shutdown__Q34nw4r3snd10FxReverbHiFv
 constexpr uint32_t kSamplesPerBlock = 96;         // one 3 ms AX frame at 32 kHz
 constexpr uint32_t kStateBytes = 0x148;           // the AXFX_REVERBHI_EXP fields used here
 // The callback's float constants in .sdata2 (read from the game, not assumed).
@@ -156,7 +179,9 @@ bool Gather(uint32_t r, const uint32_t inGuest[3], Buffers& b) {
     return true;
 }
 
-void Run(const Buffers& b) {
+// noinline: the game thread (Compare, the synchronous path) and the NSMBW_REVERB_MT worker must run
+// the very same machine code, or a different floating-point contraction could split them.
+__attribute__((noinline)) void Run(const Buffers& b) {
     uint8_t* R = b.state;
     uint32_t earlyIdx[3] = {Load32(R + 0x0C), Load32(R + 0x10), Load32(R + 0x14)};
     uint32_t preIdx = Load32(R + 0x38);
@@ -280,10 +305,156 @@ void Compare(const Buffers& b, CpuContext* ctx) {
     }
 }
 
+// ---- NSMBW_REVERB_MT: the block on a worker thread ----------------------------------------------
+
+enum class MtMode { Off, On, Check };
+
+MtMode ReadMtMode() {
+    const char* value = std::getenv("NSMBW_REVERB_MT");
+    if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) return MtMode::Off;
+    return std::strcmp(value, "check") == 0 ? MtMode::Check : MtMode::On;
+}
+
+MtMode g_mtMode = MtMode::Off;  // set once by Install, before guest code runs
+
+class Worker {
+public:
+    // Hands `b` to the worker (starting it on first use). False when no thread could be started:
+    // the caller then runs the block itself.
+    bool Submit(const Buffers& b) {
+        if (!m_started && !Start()) return false;
+        if (g_mtMode == MtMode::Check) {
+            m_before.clear();
+            b.ForEachRange([&](uint8_t* p, uint32_t n, int) { m_before.emplace_back(p, p + n); });
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_job = b;
+            m_fpControl = MkwGetHostFpControl();
+            m_pending = true;
+        }
+        m_outstanding.store(true, std::memory_order_release);
+        m_wake.notify_one();
+        return true;
+    }
+
+    // Waits until the last handed-over block is complete. Cheap (one atomic load) when none is.
+    void Join() {
+        if (!m_outstanding.load(std::memory_order_acquire)) return;
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_idle.wait(lock, [this] { return !m_pending && !m_busy; });
+        }
+        m_outstanding.store(false, std::memory_order_relaxed);
+        ++m_blocks;
+        if (g_mtMode == MtMode::Check) Verify();
+    }
+
+private:
+    bool Start() {
+        try {
+            m_thread = std::thread([this] { Main(); });
+            m_thread.detach();  // lives as long as the process; Join() is the only handshake
+        } catch (const std::system_error&) {
+            RT_LOGF(RT_TAG_RUNTIME, "audio: reverb worker failed to start; reverb stays on the game thread\n");
+            g_mtMode = MtMode::Off;
+            return false;
+        }
+        m_started = true;
+        RT_LOGF(RT_TAG_RUNTIME, "audio: native FxReverbHi on a worker thread (NSMBW_REVERB_MT%s)\n",
+                g_mtMode == MtMode::Check ? "=check" : "");
+        return true;
+    }
+
+    void Main() {
+#if defined(__SWITCH__)
+        // Off the guest core, the AX mixer's placement and priority (the two rarely overlap).
+        SwitchConfigureAudioMixThread();
+#endif
+        aurora_register_perf_thread("reverb");
+        for (;;) {
+            Buffers job;
+            uint32_t fpControl = 0;
+            {
+                std::unique_lock<std::mutex> lock(m_mutex);
+                m_wake.wait(lock, [this] { return m_pending; });
+                job = m_job;
+                fpControl = m_fpControl;
+                m_pending = false;
+                m_busy = true;
+            }
+            // The game thread's FP control (flush-to-zero mirrors the guest's FPSCR[NI]): denormal
+            // handling in a decaying tail must match the synchronous run bit for bit.
+            if (MkwGetHostFpControl() != fpControl) MkwSetHostFpControl(fpControl);
+            Run(job);
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_busy = false;
+            }
+            m_idle.notify_all();
+        }
+    }
+
+    // NSMBW_REVERB_MT=check: the worker's result against the same block run here from the snapshot.
+    void Verify() {
+        std::vector<std::vector<uint8_t>> threaded;
+        m_job.ForEachRange([&](uint8_t* p, uint32_t n, int) { threaded.emplace_back(p, p + n); });
+        size_t i = 0;
+        m_job.ForEachRange([&](uint8_t* p, uint32_t n, int) { std::memcpy(p, m_before[i++].data(), n); });
+        const uint32_t saved = MkwGetHostFpControl();
+        if (saved != m_fpControl) MkwSetHostFpControl(m_fpControl);
+        Run(m_job);
+        if (saved != m_fpControl) MkwSetHostFpControl(saved);
+        i = 0;
+        bool same = true;
+        m_job.ForEachRange([&](uint8_t* p, uint32_t n, int) {
+            if (std::memcmp(p, threaded[i++].data(), n) != 0) same = false;
+        });
+        if (!same) ++m_mismatches;
+        if (m_blocks % 2000 == 0 || (!same && m_mismatches <= 5)) {
+            RT_LOGF(RT_TAG_RUNTIME, "reverb mt check: %llu blocks on the worker, %llu differ from the game thread\n",
+                    static_cast<unsigned long long>(m_blocks), static_cast<unsigned long long>(m_mismatches));
+        }
+    }
+
+    std::thread m_thread;
+    bool m_started = false;
+    std::mutex m_mutex;
+    std::condition_variable m_wake, m_idle;
+    bool m_pending = false, m_busy = false;
+    Buffers m_job;
+    uint32_t m_fpControl = 0;
+    std::atomic<bool> m_outstanding{false};
+    uint64_t m_blocks = 0, m_mismatches = 0;
+    std::vector<std::vector<uint8_t>> m_before;  // check mode only
+};
+
+Worker& TheWorker() {
+    static Worker* worker = new Worker;  // never destroyed: its detached thread waits on it until exit
+    return *worker;
+}
+
+// True when nothing after this effect in its AxManager list runs in the same aux callback: its
+// list node (offset 4, after the vtable) links to the list's end node, which follows the list's
+// count word instead of an FxBase vtable pointer.
+bool LastOnBus(uint32_t self) {
+    uint32_t next = 0, before = 0;
+    if (!Memory::TryRead32(self + 4, next) || next < 4 || !Memory::TryRead32(next - 4, before)) return false;
+    return before < 0x100u;  // a count, not a vtable address (0x80xxxxxx)
+}
+
+// FxReverbHi::Shutdown (AxManager::ShutdownEffect and the destructor call it through the vtable)
+// frees the delay lines: the worker must be done with them first.
+void Shutdown(CpuContext* ctx) {
+    TheWorker().Join();
+    func_8026BED0(ctx);
+}
+
 // FxReverbHi::UpdateBuffer(this, channels, buffers, size, format, sampleRate, outputMode): runs the
 // reverb on the three aux buffers unless the effect is off or the output is Dolby Pro Logic II (2).
 void UpdateBuffer(CpuContext* ctx) {
     static const bool compare = std::getenv("NSMBW_REVERB_COMPARE") != nullptr;
+    if (g_mtMode != MtMode::Off) TheWorker().Join();  // blocks run in order, one at a time
     const uint32_t self = ctx->gpr[3], buffers = ctx->gpr[5], outputMode = ctx->gpr[8];
     uint32_t active = 0, in[3] = {};
     if (!Memory::TryRead32(self + 0xC, active) || !Memory::TryRead32(buffers, in[0]) ||
@@ -310,10 +481,15 @@ void UpdateBuffer(CpuContext* ctx) {
         Compare(b, ctx);
         return;
     }
+    if (g_mtMode != MtMode::Off && b.busIn[0] == nullptr && b.busOut[0] == nullptr && LastOnBus(self) &&
+        TheWorker().Submit(b)) {
+        return;
+    }
     Run(b);
 }
 
 const RawDispatchRecord kRecord{kUpdateBuffer, &UpdateBuffer, 0, false};
+const RawDispatchRecord kShutdownRecord{kShutdown, &Shutdown, 0, false};
 
 } // namespace
 
@@ -323,6 +499,14 @@ void Install() {
     }
     TranslatedFunctionRegistry::SetRuntimeRedirect(&kRecord);
     RT_LOGF(RT_TAG_RUNTIME, "audio: native FxReverbHi (couch play)\n");
+    g_mtMode = ReadMtMode();
+    if (g_mtMode != MtMode::Off) {
+        TranslatedFunctionRegistry::SetRuntimeRedirect(&kShutdownRecord);
+    }
+}
+
+void JoinWorker() {
+    if (g_mtMode != MtMode::Off) TheWorker().Join();
 }
 
 } // namespace AxfxReverbNative

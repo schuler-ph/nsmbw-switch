@@ -4,6 +4,7 @@
 
 #include "abi_bridge.h"
 #include "audio_backend.h"
+#include "axfx_reverb_native.h"
 #include <aurora/aurora.h>
 #include "ax_mix_kernels.h"
 #include "isa/big_endian.h"
@@ -127,6 +128,9 @@ public:
     }
 
     void JoinMix() {
+        // NSMBW_REVERB_MT: the aux callback's reverb block may still run on its worker; it writes
+        // the aux buffers the next command list reads back and that PublishAuxOutputs may reuse.
+        AxfxReverbNative::JoinWorker();
         if (m_mixThread.joinable()) {
             const auto start = std::chrono::steady_clock::now();
             std::unique_lock<std::mutex> lock(m_mixMutex);
