@@ -125,9 +125,15 @@ void ApplyMouseGyro(Intent& intent) {
     }
     float x = 0.0f;
     SDL_GetMouseState(&x, nullptr);
-    int width = 0;
-    SDL_GetWindowSize(window, &width, nullptr);
     const uint64_t now = SDL_GetTicksNS();
+    // The width only scales the swing threshold; SDL_GetWindowSize takes SDL's object lock, so ask
+    // a few times a second rather than on every read (four reads per frame).
+    static int width = 0;
+    static uint64_t widthNs = 0;
+    if (width == 0 || now - widthNs >= 250'000'000) {
+        SDL_GetWindowSize(window, &width, nullptr);
+        widthNs = now;
+    }
     const float threshold = std::max(4.0f, static_cast<float>(width) * 0.01f);
     if (haveLast && std::fabs(x - lastX) >= threshold) {
         const int dir = x < lastX ? -1 : 1;

@@ -7,6 +7,7 @@
 #include "platform/switch_platform.h"
 
 #include "dev_link.h"
+#include "guest_flat_memory.h"
 
 #include <aurora/aurora.h>
 
@@ -14,6 +15,7 @@
 #include <atomic>
 
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
@@ -251,6 +253,10 @@ extern "C" int __syscall_thread_detach(struct __pthread_t* thread) {
     return 0;
 }
 
+namespace {
+void FlushLogTee(uint32_t timeoutMs) noexcept;  // the log tee, below
+}
+
 // hbloader runs a homebrew .nro inside its own process, so an unhandled CPU fault produces no
 // Atmosphere crash report naming this program; libnx hands it to this handler instead, and these
 // [switch-crash] lines in stderr.txt are the only record of the crash.
@@ -290,7 +296,9 @@ extern "C" void __libnx_exception_handler(ThreadExceptionDump* ctx) {
         fp = next;
     }
     SwitchCrashWrite("[switch-crash] end\n");
-    // The development link's thread still runs: give it the time to send the crash lines to the PC.
+    // The logger thread still runs: let it write what is queued (the crash lines included), then
+    // write the rest from here; after that the development link gets time to send them to the PC.
+    FlushLogTee(1500);
     DevLink::FlushForCrash(1500);
     // hbloader unmaps this module's code while sibling threads still run, so returning (or a normal
     // exit) faults again inside the unmapped text. Leave immediately.
@@ -315,10 +323,43 @@ namespace {
 // stdout and stderr go to their file on the SD card and, for an nxlink launch (nxlink -s), to the
 // PC as well: libnx's nxlinkStdio() would replace the files, so both descriptors get a small
 // device that writes every chunk to both places.
+//
+// Nothing of that happens on the writing thread any more. Every chunk goes into a ring buffer, and
+// one logger thread writes the SD files, the nxlink socket and the development link's queue from
+// it, in order: an SD write costs the writer about 20 ms (9-17 % of the game thread in the played
+// 1-1 of the 2026-11-08 GX-hand-off runs, with a "slow frame" line per hitch), the nxlink send is
+// an IPC round trip, and DevLink::LogChunk takes a mutex the link thread also holds. Only a crash
+// (and FlushLogTee's timeout) falls back to writing synchronously, so the [switch-crash] lines
+// cannot be lost to a thread that no longer runs.
 int g_logFile[3] = {-1, -1, -1};
 int g_nxlinkSocket = -1;
 
-ssize_t TeeWrite(int stream, const char* data, size_t length) {
+// A record is a 4-byte length, a 1-byte stream (1 stdout, 2 stderr, 0 a command for the logger
+// thread) and the bytes; kWrap in the length field means "continue at the start". Records are
+// contiguous, so the logger thread can hand them out without reassembling them.
+constexpr size_t kLogRingBytes = 256u * 1024u;
+constexpr size_t kLogRecordHeader = 5;
+constexpr size_t kLogMaxChunk = 4096;  // longer writes are split; newlib's unbuffered vfprintf uses <= 1 KiB
+constexpr uint32_t kWrap = 0xFFFFFFFFu;
+constexpr uint8_t kCmdCloseSdFiles = 0;  // the command (stream 0, length 0)
+
+struct LogRing {
+    std::mutex mutex;
+    std::condition_variable work;  // a record arrived
+    std::condition_variable idle;  // the ring is empty and the logger thread is not writing
+    uint8_t data[kLogRingBytes];
+    size_t head = 0;  // next byte the logger reads
+    size_t tail = 0;  // next byte a writer fills
+    size_t used = 0;  // bytes between them, wrap markers included
+    bool busy = false;  // the logger thread holds a record it has not written yet
+    std::atomic<bool> synchronous{false};  // crash: writers go straight to the sinks
+    std::atomic<uint32_t> dropped{0};  // records that found the ring full
+    std::atomic<bool> threadStarted{false};
+};
+LogRing g_logRing;
+
+// Writes to the sinks themselves; the logger thread's side (and the crash handler's).
+void LogSinkWrite(int stream, const char* data, size_t length) {
     DevLink::LogChunk(stream, data, length);
     if (g_logFile[stream] >= 0) {
         size_t written = 0;
@@ -350,7 +391,175 @@ ssize_t TeeWrite(int stream, const char* data, size_t length) {
             sent += static_cast<size_t>(chunk);
         }
     }
+}
+
+void LogSinkCloseSdFiles() {
+    for (int stream = 1; stream <= 2; ++stream) {
+        if (g_logFile[stream] >= 0) {
+            close(g_logFile[stream]);
+            g_logFile[stream] = -1;
+        }
+    }
+}
+
+// Appends one record; with the lock held. False when it does not fit (the record is dropped, the
+// log keeps going).
+bool LogRingPushLocked(uint8_t stream, const char* data, size_t length) {
+    const size_t need = kLogRecordHeader + length;
+    size_t tail = g_logRing.tail;
+    size_t extra = 0;
+    if (tail + need > kLogRingBytes) {
+        // Not enough room before the end: mark the rest as skipped and start over.
+        extra = kLogRingBytes - tail;
+        if (g_logRing.used + extra + need > kLogRingBytes) {
+            return false;
+        }
+        if (extra >= sizeof(uint32_t)) {
+            const uint32_t wrap = kWrap;
+            std::memcpy(g_logRing.data + tail, &wrap, sizeof(wrap));
+        }  // less than a header left: the reader sees that and wraps on its own
+        tail = 0;
+    } else if (g_logRing.used + need > kLogRingBytes) {
+        return false;
+    }
+    const uint32_t len = static_cast<uint32_t>(length);
+    std::memcpy(g_logRing.data + tail, &len, sizeof(len));
+    g_logRing.data[tail + sizeof(len)] = stream;
+    if (length != 0) {
+        std::memcpy(g_logRing.data + tail + kLogRecordHeader, data, length);
+    }
+    g_logRing.tail = tail + need;
+    g_logRing.used += extra + need;
+    return true;
+}
+
+// Takes the oldest record out; with the lock held. False when the ring is empty. The bytes are
+// copied to `out` (at most kLogMaxChunk), so the lock is not held while the sinks write.
+bool LogRingPopLocked(uint8_t& stream, char* out, size_t& length) {
+    if (g_logRing.used == 0) {
+        return false;
+    }
+    size_t head = g_logRing.head;
+    if (kLogRingBytes - head < kLogRecordHeader) {
+        g_logRing.used -= kLogRingBytes - head;
+        head = 0;
+    } else {
+        uint32_t len = 0;
+        std::memcpy(&len, g_logRing.data + head, sizeof(len));
+        if (len == kWrap) {
+            g_logRing.used -= kLogRingBytes - head;
+            head = 0;
+        }
+    }
+    uint32_t len = 0;
+    std::memcpy(&len, g_logRing.data + head, sizeof(len));
+    stream = g_logRing.data[head + sizeof(len)];
+    length = len;
+    if (length != 0) {
+        std::memcpy(out, g_logRing.data + head + kLogRecordHeader, length);
+    }
+    g_logRing.head = head + kLogRecordHeader + length;
+    g_logRing.used -= kLogRecordHeader + length;
+    if (g_logRing.used == 0) {
+        g_logRing.head = g_logRing.tail = 0;
+    }
+    return true;
+}
+
+void LogThreadMain() {
+    static char buffer[kLogMaxChunk];
+    for (;;) {
+        uint8_t stream = 0;
+        size_t length = 0;
+        {
+            std::unique_lock lock(g_logRing.mutex);
+            g_logRing.work.wait(lock, [] { return g_logRing.used != 0; });
+            LogRingPopLocked(stream, buffer, length);
+            g_logRing.busy = true;
+        }
+        if (stream == 0) {
+            if (length == 0) {
+                LogSinkCloseSdFiles();
+            }
+        } else {
+            LogSinkWrite(stream, buffer, length);
+        }
+        {
+            std::lock_guard lock(g_logRing.mutex);
+            g_logRing.busy = false;
+            if (g_logRing.used == 0) {
+                g_logRing.idle.notify_all();
+            }
+        }
+    }
+}
+
+ssize_t TeeWrite(int stream, const char* data, size_t length) {
+    if (g_logRing.synchronous.load(std::memory_order_acquire)) {
+        LogSinkWrite(stream, data, length);
+        return static_cast<ssize_t>(length);
+    }
+    size_t offset = 0;
+    bool pushed = false;
+    while (offset < length) {
+        const size_t piece = std::min(length - offset, kLogMaxChunk);
+        {
+            std::lock_guard lock(g_logRing.mutex);
+            if (LogRingPushLocked(static_cast<uint8_t>(stream), data + offset, piece)) {
+                pushed = true;
+            } else {
+                g_logRing.dropped.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        offset += piece;
+    }
+    if (pushed) {
+        g_logRing.work.notify_one();
+    }
     return static_cast<ssize_t>(length);
+}
+
+// Queues a command record for the logger thread (ordered behind everything written so far).
+void TeeCommand(uint8_t command) {
+    std::lock_guard lock(g_logRing.mutex);
+    if (command == kCmdCloseSdFiles) {
+        (void)LogRingPushLocked(0, nullptr, 0);
+    }
+    g_logRing.work.notify_one();
+}
+
+// Waits until the logger thread has written everything queued, at most timeoutMs. Before the
+// thread exists (or when it is stuck) the rest is written here, synchronously, so an exit or a
+// crash loses no line. Only ever called from the thread about to end the process.
+void FlushLogTee(uint32_t timeoutMs) noexcept {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    if (g_logRing.threadStarted.load(std::memory_order_acquire)) {
+        std::unique_lock lock(g_logRing.mutex, std::try_to_lock);
+        while (!lock.owns_lock() && std::chrono::steady_clock::now() < deadline) {
+            svcSleepThread(1000000);
+            lock.try_lock();
+        }
+        if (lock.owns_lock()) {
+            g_logRing.idle.wait_until(lock, deadline, [] { return g_logRing.used == 0 && !g_logRing.busy; });
+            lock.unlock();
+        }
+    }
+    // From here on every write goes straight to the sinks, including what is still in the ring.
+    g_logRing.synchronous.store(true, std::memory_order_release);
+    std::unique_lock lock(g_logRing.mutex, std::try_to_lock);
+    if (!lock.owns_lock()) {
+        return;  // the logger thread holds it mid-record (crash inside it); its chunk is lost
+    }
+    static char buffer[kLogMaxChunk];
+    uint8_t stream = 0;
+    size_t length = 0;
+    while (LogRingPopLocked(stream, buffer, length)) {
+        if (stream == 0) {
+            LogSinkCloseSdFiles();
+        } else {
+            LogSinkWrite(stream, buffer, length);
+        }
+    }
 }
 
 ssize_t TeeStdout(struct _reent*, void*, const char* data, size_t length) {
@@ -376,6 +585,14 @@ void StartLogTee() noexcept {
     g_teeStderr.write_r = TeeStderr;
     devoptab_list[STD_OUT] = &g_teeStdout;
     devoptab_list[STD_ERR] = &g_teeStderr;
+}
+
+// Started once the guest core is known, so the thread lands on a helper core
+// (SwitchSpreadHelperThread) at the lowest priority; what was written before waits in the ring.
+void StartLogThread() noexcept {
+    // Never joined: it runs until the process ends.
+    new std::thread(LogThreadMain);
+    g_logRing.threadStarted.store(true, std::memory_order_release);
 }
 
 } // namespace
@@ -415,6 +632,7 @@ void EarlyInit() noexcept {
     // EarlyInit runs on the thread that becomes the guest thread (RuntimeMain); helpers created
     // from here on are steered off this core (SwitchSpreadHelperThread).
     g_switchGuestCore.store(static_cast<int>(svcGetCurrentProcessorNumber()), std::memory_order_relaxed);
+    StartLogThread();
     {
         u64 coreMask = 0;
         svcGetInfo(&coreMask, InfoType_CoreMask, CUR_PROCESS_HANDLE, 0);
@@ -479,18 +697,18 @@ void EarlyInit() noexcept {
             std::fprintf(stderr, "[switch] %s (launch argument)\n", item.c_str());
         }
     }
-    // NSMBW_LOG_SD=0: no log files on the SD card from here on. Each stderr line otherwise costs the
-    // game thread a synchronous SD write (14-17 % of it in the played 1-1 of the 2026-11-08
-    // GX-hand-off runs, with ~140 lines in 20 s); the devlink harness on the PC keeps the full log.
+    // Decided while the statics initialized (guest_flat_memory.cpp); said here, after the launch
+    // arguments, so the log shows the switch next to its effect.
+    std::fprintf(stderr, "[switch] guest memory: %s\n", GuestFlat::SwitchAccessPathNote());
+    // NSMBW_LOG_SD=0: no log files on the SD card from here on (the logger thread closes them once
+    // it has written everything up to here). The SD writes left the game thread with the logger
+    // thread; the switch stays for runs that should not touch the card at all. The devlink harness
+    // on the PC keeps the full log either way.
     if (const char* sd = std::getenv("NSMBW_LOG_SD"); sd != nullptr && sd[0] == '0') {
-        for (int stream = 1; stream <= 2; ++stream) {
-            if (g_logFile[stream] >= 0) {
-                static const char note[] = "[switch] NSMBW_LOG_SD=0: log continues on the devlink only\n";
-                (void)write(g_logFile[stream], note, sizeof(note) - 1);
-                close(g_logFile[stream]);
-                g_logFile[stream] = -1;
-            }
-        }
+        static const char note[] = "[switch] NSMBW_LOG_SD=0: log continues on the devlink only\n";
+        TeeWrite(1, note, sizeof(note) - 1);
+        TeeWrite(2, note, sizeof(note) - 1);
+        TeeCommand(kCmdCloseSdFiles);
     }
     // Last, so that everything above reaches the PC from the link's queue (devhost.txt).
     DevLink::Start();
@@ -505,6 +723,7 @@ void EarlyInit() noexcept {
     // with them paused, a thread stopped inside a socket call took the system's bsdsocket service
     // down when the process ended later (run 18, error 2162-0002 in 0100000000000012).
     std::fprintf(stderr, "[switch] ending the process (code %d)\n", code);
+    FlushLogTee(2000);
     svcExitProcess();
 }
 

@@ -93,6 +93,9 @@ const char* AccelCalibrationMessage();
 
 // True when a real Wii Remote (alone or with an extension) is on `chan` right now.
 bool HasRealRemote(uint32_t chan);
+// Drops the cached port -> SDL gamepad answers (refreshed every few ms otherwise): call when a
+// controller was added or removed, before the next read. Guest thread.
+void InvalidatePortCache();
 // Sends one raw output report (report ID first) to the real Wii Remote on `chan`, behind the
 // driver's own writes: the speaker's set-up and audio (WPADControlSpeaker/WPADSendStreamData).
 // False when there is no real remote there.

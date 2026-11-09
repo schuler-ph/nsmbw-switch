@@ -550,6 +550,14 @@ bool initialize() {
   // picks it by itself ("No available video device").
   TRY(SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "offscreen"), "Error setting {}: {}", SDL_HINT_VIDEO_DRIVER,
       SDL_GetError());
+  // Every SDL call on a gamepad, joystick or window first looks the object up in SDL's object hash
+  // table under a process-wide RW lock. PADRead makes dozens of them per frame (a button or axis
+  // each), and on Horizon each unlock is a kernel call (svcSignalProcessWideKey): 1.5 % of the game
+  // thread in the played 1-1 at 1020 MHz. "1" keeps SDL's NULL checks and drops only that lookup.
+  // aurora removes a gamepad from its own table when it closes it, and the runtime's port cache is
+  // dropped on the same event, so no closed handle is used afterwards.
+  TRY(SDL_SetHint(SDL_HINT_INVALID_PARAM_CHECKS, "1"), "Error setting {}: {}", SDL_HINT_INVALID_PARAM_CHECKS,
+      SDL_GetError());
 #endif
   TRY(SDL_InitSubSystem(SDL_INIT_EVENTS | SDL_INIT_VIDEO), "Error initializing SDL: {}", SDL_GetError());
 

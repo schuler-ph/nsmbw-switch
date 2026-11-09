@@ -325,6 +325,36 @@ struct PortMemory {
 };
 std::array<PortMemory, PAD_MAX_CONTROLLERS> g_ports{};
 
+// SDL_GetGamepadFromPlayerIndex and SDL_GetGamepadName each take SDL's object lock (a hash-table
+// lookup under an RW lock). The KPAD path asked some 70 times per frame, four ports times every
+// helper on the way (RealKind, KindForPort, HasRealRemote from the mouse-gyro check, ...): 1.4 %
+// of the game thread on the Switch (svcSignalProcessWideKey from SDL_FindInHashTable, Runde 7 of
+// the GX-hand-off report). The answer for the four ports is cached here, refreshed at most every
+// kPortCacheNs, and dropped at once when a controller comes or goes (InvalidatePortCache from the
+// overlay's event handling, on this same thread). Guest thread only, like everything else here.
+struct PortGamepad {
+    SDL_Gamepad* gamepad = nullptr;
+    Kind kind = Kind::NotWii;
+};
+constexpr uint64_t kPortCacheNs = 4'000'000;  // a quarter of a frame; player-index changes land within that
+std::array<PortGamepad, PAD_MAX_CONTROLLERS> g_portCache{};
+uint64_t g_portCacheNs = 0;
+bool g_portCacheValid = false;
+
+const PortGamepad& CachedPort(uint32_t port) {
+    const uint64_t now = SDL_GetTicksNS();
+    if (!g_portCacheValid || now - g_portCacheNs >= kPortCacheNs) {
+        for (uint32_t p = 0; p < PAD_MAX_CONTROLLERS; ++p) {
+            SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(p));
+            g_portCache[p].gamepad = gamepad;
+            g_portCache[p].kind = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
+        }
+        g_portCacheNs = now;
+        g_portCacheValid = true;
+    }
+    return g_portCache[port];
+}
+
 bool g_wiiDriverEnabled = false;
 uint64_t g_lastScanMs = 0;
 uint32_t g_scanCount = 0;
@@ -535,7 +565,7 @@ void StepAccelCalibration() {
     if (!g_calibration.active) {
         return;
     }
-    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(g_calibration.chan));
+    SDL_Gamepad* gamepad = CachedPort(g_calibration.chan).gamepad;
     if (gamepad == nullptr || !IsKpadKind(RealKind(g_calibration.chan))) {
         FinishAccelCalibration("Cancelled: the Wii Remote went away.");
         return;
@@ -777,12 +807,14 @@ Kind KindForName(const char* name) {
     return Kind::Remote;
 }
 
+void InvalidatePortCache() {
+    g_portCacheValid = false;
+}
+
 // Kind of the SDL gamepad assigned to a game port, NotWii when empty.
 Kind KindForPort(uint32_t port) {
     if (port >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
-    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(port));
-    if (gamepad == nullptr) return Kind::NotWii;
-    return KindForName(SDL_GetGamepadName(gamepad));
+    return CachedPort(port).kind;
 }
 
 // Human-readable name of a Kind for the settings overlay.
@@ -807,8 +839,9 @@ static bool IsKpadKind(Kind kind) {
 static Kind RealKind(uint32_t chan) {
     if (chan >= PAD_MAX_CONTROLLERS) return Kind::NotWii;
     PortMemory& memory = g_ports[chan];
-    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
-    const Kind live = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
+    const PortGamepad& port = CachedPort(chan);
+    SDL_Gamepad* gamepad = port.gamepad;
+    const Kind live = port.kind;
     const uint64_t now = SDL_GetTicks();
     if (live != Kind::NotWii) {
         memory.lastKind = live;
@@ -847,7 +880,7 @@ bool HasRealRemote(uint32_t chan) {
 
 bool SendRawReport(uint32_t chan, const uint8_t* data, int size) {
     if (!HasRealRemote(chan)) return false;
-    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
+    SDL_Gamepad* gamepad = CachedPort(chan).gamepad;
     return gamepad != nullptr && SDL_SendGamepadEffect(gamepad, data, size);
 }
 
@@ -902,8 +935,9 @@ bool ReadKpadSampleUninjected(uint32_t chan, KpadSample& sample) {
     if (ScriptedSample(chan, sample)) {
         return true;
     }
-    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
-    const Kind kind = gamepad != nullptr ? KindForName(SDL_GetGamepadName(gamepad)) : Kind::NotWii;
+    const PortGamepad& port = CachedPort(chan);
+    SDL_Gamepad* gamepad = port.gamepad;
+    const Kind kind = port.kind;
     if (!IsKpadKind(kind)) {
         const Kind remembered = RealKind(chan);
         if (!IsKpadKind(remembered)) {
@@ -1018,7 +1052,7 @@ bool ReadAccelDebug(uint32_t chan, float sdlG[3], float kpadAcc[3]) {
     if (!IsKpadKind(RealKind(chan))) {
         return false;
     }
-    SDL_Gamepad* gamepad = SDL_GetGamepadFromPlayerIndex(static_cast<int>(chan));
+    SDL_Gamepad* gamepad = CachedPort(chan).gamepad;
     if (gamepad == nullptr) {
         return false;
     }
