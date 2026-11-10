@@ -70,6 +70,26 @@ else()
     set(MKW_NO_SLP_VECTORIZE_FLAG -fno-slp-vectorize)
 endif()
 
+# Switch code model experiment (default OFF = unchanged build). The .nro is one static PIE
+# executable, yet CMake compiles every static/object library -fPIC (aurora-main sets
+# CMAKE_POSITION_INDEPENDENT_CODE): each access to a global then loads its address from the GOT
+# first (adrp + ldr + the real load; ~230k such sites, the guest page tables and flags in every
+# translated memory access among them) and every default-visibility function in the runtime and
+# aurora stays interposable, so GCC will not inline it even inside its own TU. -fPIE is the
+# right model for code that only ever links into that executable. Appended after CMake's own
+# -fPIC through the targets' compile options (GCC takes the last -fpic/-fPIC/-fpie/-fPIE).
+set(MKW_SWITCH_CODE_MODEL_FLAG "")
+if(MKW_PLATFORM_SWITCH)
+    option(MKW_SWITCH_PIE_OBJECTS
+        "Switch: compile runtime, translated shards and aurora -fPIE instead of -fPIC" OFF)
+    if(MKW_SWITCH_PIE_OBJECTS)
+        set(MKW_SWITCH_CODE_MODEL_FLAG -fPIE)
+        # -fPIE alone still reaches every *extern* global through the GOT; the guest-memory tables
+        # that every translated load/store reads become hidden (isa/ppc_isa_tls.h).
+        add_compile_definitions(MKW_SWITCH_HIDDEN_GUEST_TABLES=1)
+    endif()
+endif()
+
 if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
     message(FATAL_ERROR "WiiCompiled only supports Release builds")
 endif()
@@ -321,7 +341,7 @@ else()
     foreach(t ${AURORA_TARGETS})
         if(TARGET ${t})
             set_target_properties(${t} PROPERTIES UNITY_BUILD OFF)
-            target_compile_options(${t} PRIVATE -O3 -ffast-math -w -pipe)
+            target_compile_options(${t} PRIVATE -O3 -ffast-math -w -pipe ${MKW_SWITCH_CODE_MODEL_FLAG})
             if(MKW_PLATFORM_WINDOWS)
                 target_include_directories(${t} PRIVATE ${MKW_DX_STUB_DIR})
             endif()

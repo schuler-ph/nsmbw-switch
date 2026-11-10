@@ -253,6 +253,39 @@ std::string ValidateGeneratedIndirectDispatchLocked() {
 }
 }
 
+bool VerifyHotTlsAccessors() {
+    struct Check {
+        const char* name;
+        const void* accessor;
+        const void* variable;
+    };
+    // &variable is the compiler's own thread_local address (on Switch through __aarch64_read_tp);
+    // the accessor is the inline tpidrro_el0 + tprel path of isa/ppc_isa_tls.h.
+    const Check checks[] = {
+        {"g_currentCpuContext", &CurrentCpuContextTls(), &g_currentCpuContext},
+        {"RecompMod::g_currentTranslatedExecutionAddress",
+         &RecompMod::CurrentTranslatedExecutionAddressTls(),
+         &RecompMod::g_currentTranslatedExecutionAddress},
+        {"g_mkwHostNiActive", &MkwHostNiActiveTls(), &g_mkwHostNiActive},
+        {"g_mkwNiFlushThreshold", &MkwNiFlushThresholdTls(), &g_mkwNiFlushThreshold},
+        {"g_indirectResolvedDispatchMemo", &IndirectResolvedDispatchMemoTls(),
+         &g_indirectResolvedDispatchMemo},
+        {"g_indirectRawDispatchMemo", &IndirectRawDispatchMemoTls(), &g_indirectRawDispatchMemo},
+    };
+    for (const Check& check : checks) {
+        if (check.accessor != check.variable) {
+            RT_LOG(RT_TAG_RUNTIME) << "ERROR: inline thread-local access for " << check.name
+                                   << " resolves to " << check.accessor << ", the compiler's to "
+                                   << check.variable << std::endl;
+            return false;
+        }
+    }
+#if defined(MKW_SWITCH_INLINE_TP)
+    RT_LOG(RT_TAG_RUNTIME) << "hot thread-locals: inline tpidrro_el0 access verified" << std::endl;
+#endif
+    return true;
+}
+
 void RegisterStaticIndirectDispatchTable(const StaticIndirectDispatchTable* table) {
     std::lock_guard<std::mutex> lock(RegistryMutex());
     if (RegistryFrozen().load(std::memory_order_acquire)) {
@@ -352,6 +385,9 @@ void TranslatedFunctionRegistry::Finalize() {
         }
         RebuildIndicesLocked();
         validationError = ValidateGeneratedIndirectDispatchLocked();
+        if (validationError.empty() && !VerifyHotTlsAccessors()) {
+            validationError = "inline thread-local access does not match the compiler's TLS layout";
+        }
         if (validationError.empty()) {
             // Duplicate-registration tracking is initialization-only. AddressIndex
             // owns every published winner after this point, and Register rejects

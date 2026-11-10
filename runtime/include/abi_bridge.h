@@ -306,10 +306,20 @@ struct KnownTypedNativeCpuCall {
 #include "native_cpu_calls.inc"
 
 // Direct-mapped thread-local memo in front of the sorted registry lookup every bctrl performs;
-// a miss just re-runs the sorted lookup. 512 entries (12 KiB) covers the per-frame indirect
-// working set while staying L1/L2 resident, unlike 4096 which would thrash L2. Must stay a
-// power of two, the index masks with (size - 1).
-inline constexpr size_t kIndirectDispatchCacheEntries = 512;
+// a miss just re-runs the sorted lookup. 1024 entries (16 KiB raw + 16 KiB resolved per thread)
+// cover the per-frame indirect working set of a busy two-player level while staying L2 resident.
+inline constexpr unsigned kIndirectDispatchCacheIndexBits = 10;
+inline constexpr size_t kIndirectDispatchCacheEntries = size_t{1} << kIndirectDispatchCacheIndexBits;
+
+// Fibonacci hashing: the index is the HIGH bits of the product. The low bits of (x * odd) depend
+// only on the low bits of x, and 97 % of the translated entry points are 16-byte aligned, so the
+// former `& (entries - 1)` index kept its two low bits at zero and used one slot in four - a
+// 128-entry cache in a 512-entry array, which is what sent the 4-1 two-player profile into
+// FindStaticIndirectDispatchEntry. Pure cache placement: hits and misses return the same record.
+MKW_PPC_FORCE_INLINE size_t IndirectDispatchCacheIndex(uint32_t address) noexcept {
+    return static_cast<uint32_t>((address >> 2) * 2654435761u) >>
+           (32u - kIndirectDispatchCacheIndexBits);
+}
 
 // Namespace-scope `inline thread_local`, not function-local `static thread_local`, to avoid a
 // thread-static init epoch check on every bctrl (same as g_currentCpuContext in ppc_runtime.h).
@@ -329,6 +339,18 @@ struct IndirectRawDispatchMemoEntry {
 inline thread_local IndirectRawDispatchMemoEntry
     g_indirectRawDispatchMemo[kIndirectDispatchCacheEntries]{};
 
+// Hot-path access (isa/ppc_isa_tls.h).
+using IndirectResolvedDispatchMemo = IndirectResolvedDispatchMemoEntry[kIndirectDispatchCacheEntries];
+using IndirectRawDispatchMemo = IndirectRawDispatchMemoEntry[kIndirectDispatchCacheEntries];
+MKW_HOT_TLS_ACCESSOR(IndirectResolvedDispatchMemoTls, IndirectResolvedDispatchMemo,
+                     g_indirectResolvedDispatchMemo, "g_indirectResolvedDispatchMemo")
+MKW_HOT_TLS_ACCESSOR(IndirectRawDispatchMemoTls, IndirectRawDispatchMemo,
+                     g_indirectRawDispatchMemo, "g_indirectRawDispatchMemo")
+
+// Startup check that every MKW_HOT_TLS_ACCESSOR resolves to the compiler's own &variable
+// (abi_bridge.cpp). Returns false and logs on the first mismatch.
+bool VerifyHotTlsAccessors();
+
 class TranslatedFunctionRegistry {
 public:
     static void Register(TranslatedFunctionInfo info);
@@ -342,8 +364,7 @@ public:
             return FindByAddressPtrSlow(address);
         }
 
-        auto& cached = g_indirectResolvedDispatchMemo[
-            ((address >> 2) * 2654435761u) & (kIndirectDispatchCacheEntries - 1)];
+        auto& cached = IndirectResolvedDispatchMemoTls()[IndirectDispatchCacheIndex(address)];
         if (cached.valid && cached.address == address) {
             return cached.info;
         }
@@ -362,8 +383,7 @@ public:
             return nullptr;
         }
 
-        auto& cached = g_indirectRawDispatchMemo[
-            ((address >> 2) * 2654435761u) & (kIndirectDispatchCacheEntries - 1)];
+        auto& cached = IndirectRawDispatchMemoTls()[IndirectDispatchCacheIndex(address)];
         if (cached.valid && cached.address == address) {
             return cached.record;
         }

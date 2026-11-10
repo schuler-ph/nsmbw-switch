@@ -42,7 +42,7 @@
 inline double PpcFusedMulAdd(double a, double b, double c)
 {
 #if MKW_SOFT_FMA
-    return PpcSoftFma::Fma(a, b, c, g_mkwHostNiActive);
+    return PpcSoftFma::Fma(a, b, c, MkwHostNiActiveTls());
 #else
     return std::fma(a, b, c);
 #endif
@@ -207,7 +207,7 @@ inline double PpcPackPairedInline(float ps0, float ps1)
 // double->single conversion (CVTSD2SS isn't covered by FTZ) and raw lane pass-through moves.
 inline bool MkwHostNiActiveInline() noexcept
 {
-    return g_mkwHostNiActive;
+    return MkwHostNiActiveTls();
 }
 
 inline float PpcForceSingleValueSlowInline(double value)
@@ -221,14 +221,14 @@ inline float PpcForceSingleValueSlowInline(double value)
     const __m128d v = _mm_set_sd(value);
     const __m128d signMask = _mm_set_sd(-0.0);
     const __m128d magnitude = _mm_andnot_pd(signMask, v);
-    const __m128d flush = _mm_cmplt_sd(magnitude, _mm_set_sd(g_mkwNiFlushThreshold));
+    const __m128d flush = _mm_cmplt_sd(magnitude, _mm_set_sd(MkwNiFlushThresholdTls()));
     const __m128d kept = _mm_andnot_pd(_mm_andnot_pd(signMask, flush), v);
     return static_cast<float>(_mm_cvtsd_f64(kept));
 #elif defined(__aarch64__)
     const float64x1_t v = vdup_n_f64(value);
     const uint64x1_t signMask = vdup_n_u64(0x8000000000000000ULL);
     const float64x1_t magnitude = vreinterpret_f64_u64(vbic_u64(vreinterpret_u64_f64(v), signMask));
-    const uint64x1_t flush = vclt_f64(magnitude, vdup_n_f64(g_mkwNiFlushThreshold));
+    const uint64x1_t flush = vclt_f64(magnitude, vdup_n_f64(MkwNiFlushThresholdTls()));
     const uint64x1_t signOnly = vand_u64(vreinterpret_u64_f64(v), signMask);
     const uint64x1_t kept = vbsl_u64(flush, signOnly, vreinterpret_u64_f64(v));
     return static_cast<float>(vget_lane_f64(vreinterpret_f64_u64(kept), 0));
@@ -645,7 +645,7 @@ inline PpcPairVec PpcFmaddPairInline(PpcPairVec multiplicand, PpcPairVec multipl
     _mm_store_ps(n, multiplier);
     _mm_store_ps(a, addend);
     for (int lane = 0; lane < 4; ++lane) {
-        m[lane] = PpcSoftFma::Fmaf(m[lane], n[lane], a[lane], g_mkwHostNiActive);
+        m[lane] = PpcSoftFma::Fmaf(m[lane], n[lane], a[lane], MkwHostNiActiveTls());
     }
     return _mm_load_ps(m);
 #elif defined(__x86_64__)
@@ -669,7 +669,7 @@ inline PpcPairVec PpcFmsubPairInline(PpcPairVec multiplicand, PpcPairVec multipl
         // vfmsub returns a sole NaN subtractor as it is: negating it first would flip its sign.
         m[lane] = std::isnan(c[lane]) && !std::isnan(m[lane]) && !std::isnan(n[lane])
                       ? c[lane] + c[lane]
-                      : PpcSoftFma::Fmaf(m[lane], n[lane], -c[lane], g_mkwHostNiActive);
+                      : PpcSoftFma::Fmaf(m[lane], n[lane], -c[lane], MkwHostNiActiveTls());
     }
     return _mm_load_ps(m);
 #elif defined(__x86_64__)

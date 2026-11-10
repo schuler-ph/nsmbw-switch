@@ -54,13 +54,16 @@ struct CpuContext {
 };
 
 inline thread_local CpuContext* g_currentCpuContext = nullptr;
+// Hot-path access (ppc_isa_tls.h): every translated call compares against it.
+MKW_HOT_TLS_ACCESSOR(CurrentCpuContextTls, CpuContext*, g_currentCpuContext, "g_currentCpuContext")
 
 class CpuContextScope {
 public:
     explicit CpuContextScope(CpuContext* ctx)
-        : previous_(g_currentCpuContext)
     {
-        g_currentCpuContext = ctx;
+        CpuContext*& current = CurrentCpuContextTls();
+        previous_ = current;
+        current = ctx;
 
         savedMxcsr_ = MkwGetHostFpControl();
         if (ctx != nullptr)
@@ -69,7 +72,7 @@ public:
 
     ~CpuContextScope()
     {
-        g_currentCpuContext = previous_;
+        CurrentCpuContextTls() = previous_;
         if (previous_ != nullptr)
             MkwApplyHostNiMode(previous_->fpscr);
         else
@@ -86,7 +89,7 @@ private:
 
 inline CpuContext* TryGetCpuContext() noexcept
 {
-    return g_currentCpuContext;
+    return CurrentCpuContextTls();
 }
 
 inline CpuContext* CurrentCpuContext()
