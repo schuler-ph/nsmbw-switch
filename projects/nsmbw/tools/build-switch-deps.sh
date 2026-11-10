@@ -81,6 +81,11 @@ set +u; source "$DEVKITPRO/switchvars.sh"; set -u
 meson compile -C "$deps/uam/build-switch" -j "$jobs"
 
 echo "[3/5] Dawn @ $dawn_pin + Switch patches"
+# Patched once; a later run skips this step. To start over, delete $deps/dawn.
+patched_mark=$deps/dawn/.switch-patches-applied
+if [[ -f "$patched_mark" ]]; then
+    echo "  already patched ($patched_mark)"
+else
 checkout https://github.com/google/dawn.git "$deps/dawn" "$dawn_pin"
 git -C "$deps/dawn" -c submodule.third_party/angle.update=none -c submodule.third_party/swiftshader.update=none \
     submodule update --init --recursive --jobs "$jobs" --depth 1
@@ -101,6 +106,8 @@ for p in "$repo"/projects/nsmbw/tools/patches/dawn-*.patch; do
         fail "$(basename "$p") does not apply to $deps/dawn"
     fi
 done
+touch "$patched_mark"
+fi
 
 echo "[4/5] configure Dawn (deko3d backend only, static monolithic library)"
 cmake -S "$deps/dawn" -B "$deps/dawn-build-switch" -G Ninja \
@@ -119,6 +126,7 @@ cmake -S "$deps/dawn" -B "$deps/dawn-build-switch" -G Ninja \
 echo "[5/5] build Dawn"
 cmake --build "$deps/dawn-build-switch" --target webgpu_dawn --parallel "$jobs"
 lib=$deps/dawn-build-switch/src/dawn/native/libwebgpu_dawn.a
-aarch64-none-elf-nm -C "$lib" | grep -q 'dawn::native::deko3d' || fail "$lib has no deko3d backend"
+# grep without -q reads all of nm's output, so pipefail does not see nm killed by SIGPIPE.
+aarch64-none-elf-nm -C "$lib" | grep 'dawn::native::deko3d' >/dev/null || fail "$lib has no deko3d backend"
 echo "Done: $lib"
 echo "      $deps/uam/build-switch/libuam.a"
