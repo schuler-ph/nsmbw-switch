@@ -1714,6 +1714,17 @@ void InitializeRuntimeSettings() noexcept {
     aurora_set_display_mode(static_cast<AuroraDisplayMode>(g_displayMode));
     g_displayMode = static_cast<int>(aurora_get_display_mode());
     aurora_set_disable_copy_filter(g_disableCopyFilter);
+    // NSMBW_SKIPUNREADY (Switch default "all", switch_platform.cpp) overrides the Config.toml choice
+    // for this run without writing it: 0 waits for every pipeline, 1 skips draws whose pipeline is
+    // still compiling except in an EFB copy not made in the previous frame (the config default),
+    // all skips there too.
+    if (const char* skip = std::getenv("NSMBW_SKIPUNREADY"); skip != nullptr && skip[0] != 0) {
+        const std::string_view mode{skip};
+        g_skipUnreadyPipelines = mode != "0";
+        aurora_set_skip_unready_persistent_passes(mode == "all");
+        RT_LOGF(RT_TAG_CONFIG, "NSMBW_SKIPUNREADY=%s: skip unready pipelines %s, in non-recurring EFB copies %s\n",
+                skip, g_skipUnreadyPipelines ? "on" : "off", mode == "all" ? "on" : "off");
+    }
     aurora_set_skip_unready_pipelines(g_skipUnreadyPipelines);
     g_strapInputAccepted.store(false, std::memory_order_relaxed);
     g_startupDismissFrame.store(UINT64_MAX, std::memory_order_relaxed);
