@@ -276,8 +276,23 @@ Intent TouchIntent() {
     return intent;
 }
 
+#if defined(__SWITCH__)
+// The Switch's own controllers (aurora-main/lib/switch/input_switch.cpp), by the labels on them:
+// they reach aurora's pad as A -> A, B -> B, X -> X, Y -> Y, R -> Z, ZL/ZR -> the L/R triggers,
+// + -> Start, - -> Back (extButton); L has no GameCube button, so it is read from the gamepad.
+// The layout follows Switch platformers: both bottom-right buttons jump (A, B -> 2), both others
+// run (Y, X -> 1), the triggers spin (ZL, ZR and R -> shake), L is the remote's A (the bubble in
+// multiplayer, dAcPy_c::setBalloonButtonA). NSMBW's menus confirm with 2 and go back with 1, so B
+// confirms there too and Y/X go back. A sideways Joy-Con arrives already turned into these.
+bool SwitchLeftShoulder(uint32_t chan) {
+    const s32 index = PADGetIndexForPort(chan);
+    SDL_Gamepad* gamepad = index >= 0 ? PADGetSDLGamepadForIndex(static_cast<u32>(index)) : nullptr;
+    return gamepad != nullptr && SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_LEFT_SHOULDER);
+}
+#endif
+
 // A GameCube-style pad state (after the user's remapping) as the sideways remote.
-Intent PadIntent(const PADStatus& pad) {
+Intent PadIntent(uint32_t chan, const PADStatus& pad) {
     Intent intent;
     const uint32_t b = pad.button;
     if (b & PAD_BUTTON_LEFT) intent.buttons |= kScreenLeft;
@@ -290,6 +305,16 @@ Intent PadIntent(const PADStatus& pad) {
         if (std::abs(sx) >= kDiagonalSlope * std::abs(sy)) intent.buttons |= sx < 0 ? kScreenLeft : kScreenRight;
         if (std::abs(sy) >= kDiagonalSlope * std::abs(sx)) intent.buttons |= sy < 0 ? kScreenDown : kScreenUp;
     }
+#if defined(__SWITCH__)
+    if (b & (PAD_BUTTON_A | PAD_BUTTON_B)) intent.buttons |= kWpadTwo;
+    if (b & (PAD_BUTTON_X | PAD_BUTTON_Y)) intent.buttons |= kWpadOne;
+    if (SwitchLeftShoulder(chan)) intent.buttons |= kWpadA;
+    if (b & PAD_BUTTON_START) intent.buttons |= kWpadPlus;
+    if ((pad.extButton & PAD_BUTTON_BACK) != 0) intent.buttons |= kWpadMinus;
+    intent.shake = (b & (PAD_TRIGGER_Z | PAD_TRIGGER_L | PAD_TRIGGER_R)) != 0 ||
+                   pad.triggerLeft >= kTriggerThreshold || pad.triggerRight >= kTriggerThreshold;
+#else
+    (void)chan;
     if (b & PAD_BUTTON_A) intent.buttons |= kWpadTwo;
     if (b & (PAD_BUTTON_B | PAD_BUTTON_X)) intent.buttons |= kWpadOne;
     if (b & PAD_BUTTON_Y) intent.buttons |= kWpadA;
@@ -298,6 +323,7 @@ Intent PadIntent(const PADStatus& pad) {
         intent.buttons |= kWpadMinus;
     }
     intent.shake = (b & (PAD_TRIGGER_Z | PAD_TRIGGER_R)) != 0 || pad.triggerRight >= kTriggerThreshold;
+#endif
     const float x = static_cast<float>(pad.substickX) / 127.0f;
     intent.tilt = std::fabs(x) < kTiltDeadZone ? 0.0f : std::clamp(x, -1.0f, 1.0f);
     return intent;
@@ -440,7 +466,7 @@ bool Sample(uint32_t chan, WiiRemoteInput::KpadSample& sample) {
     Intent intent;
     bool padMotion = false;
     if (pad) {
-        intent = PadIntent(g_pads[chan]);
+        intent = PadIntent(chan, g_pads[chan]);
         padMotion = ApplyControllerMotion(chan, intent);
     }
     if (chan == 0) {
