@@ -21,6 +21,10 @@
 #include <dolphin/gx/GXAurora.h>
 #include <dolphin/vi.h>
 
+#if defined(__SWITCH__)
+#include <malloc.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -638,6 +642,16 @@ void LogSceneChanges() {
     }
     RT_LOGF(RT_TAG_VI, "scene -> 0x%03X %s (frame %u)\n", now, name,
             s_presentedXfbFrames.load(std::memory_order_relaxed));
+#if defined(__SWITCH__)
+    // libnx hands the whole process memory to the heap at start, so the kernel's used-memory figure
+    // never moves; newlib's allocator statistics show what the game, aurora and deko3d hold.
+    {
+        const struct mallinfo heap = mallinfo();
+        RT_LOGF(RT_TAG_VI, "heap: %llu MiB in use, %llu MiB arena at scene 0x%03X\n",
+                static_cast<unsigned long long>(heap.uordblks) >> 20,
+                static_cast<unsigned long long>(heap.arena) >> 20, now);
+    }
+#endif
 }
 
 void AdvanceRetrace(CpuContext* ctx, Clock::time_point retraceStamp, bool serviceAurora) {
