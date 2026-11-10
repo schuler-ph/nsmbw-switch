@@ -29,6 +29,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <ctime>
 #include <cmath>
 #include <string>
 #include <unordered_map>
@@ -1071,6 +1072,66 @@ void TakeMixStats(uint64_t* mixNanos, uint64_t* waitNanos, uint32_t* mixes, int*
 uint64_t DvdReadNanosTotal();
 uint32_t DvdReadCount();
 
+namespace GxStream { extern uint64_t g_gxVtxPublishCount; }
+using GxStream::g_gxVtxPublishCount;
+extern uint64_t g_gxBeginCount;
+extern uint64_t g_gxBeginRawCount;
+
+// NSMBW_LOG_CPU=<frames> (diagnostics, Linux): every <frames> presented frames, the game thread's
+// own CPU time per frame from the end of the previous present to this present's start (guest code
+// and GX HLE, without aurora_end_frame and pacing), and GX HLE counters per frame. Off the CPU
+// (blocked on the GX thread, the GPU or a sleep) does not count, so it stays meaningful with a
+// software GPU.
+static int LogCpuFrames() {
+    static const int n = [] {
+        const char* v = std::getenv("NSMBW_LOG_CPU");
+        return v != nullptr ? std::atoi(v) : 0;
+    }();
+    return n;
+}
+
+static double GameThreadCpuMs() {
+#if defined(__linux__)
+    timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+#else
+    return 0.0;
+#endif
+}
+
+static void LogCpuOnPresent(double cpuAtPresentStart) {
+    const int every = LogCpuFrames();
+    if (every <= 0) {
+        return;
+    }
+    static double s_lastEndCpu = -1, s_sum = 0;
+    static int s_frames = 0;
+    static uint64_t s_pub = 0, s_begin = 0, s_raw = 0;
+    if (s_lastEndCpu >= 0) {
+        s_sum += cpuAtPresentStart - s_lastEndCpu;
+        ++s_frames;
+    } else {
+        s_pub = g_gxVtxPublishCount;
+        s_begin = g_gxBeginCount;
+        s_raw = g_gxBeginRawCount;
+    }
+    s_lastEndCpu = GameThreadCpuMs();
+    if (s_frames >= every) {
+        uint32_t sceneWord = 0;
+        Memory::TryRead32(0x80428730u, sceneWord);
+        const double n = s_frames;
+        RT_LOGF(RT_TAG_VI, "cpu: frame %u scene 0x%03X: game cpu %.3f ms/frame, vtx publishes %.1f, GXBegin %.1f (raw %.1f) per frame\n",
+                s_presentedXfbFrames.load(std::memory_order_relaxed), sceneWord & 0xFFFFu, s_sum / n,
+                (g_gxVtxPublishCount - s_pub) / n, (g_gxBeginCount - s_begin) / n, (g_gxBeginRawCount - s_raw) / n);
+        s_sum = 0;
+        s_frames = 0;
+        s_pub = g_gxVtxPublishCount;
+        s_begin = g_gxBeginCount;
+        s_raw = g_gxBeginRawCount;
+    }
+}
+
 void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     if (s_presentSequenceActive.exchange(true, std::memory_order_acq_rel)) {
         return;
@@ -1078,6 +1139,7 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     GuestProfiler::OnFramePresented();
     static FrameTimes times;
     const Clock::time_point presentStart = Clock::now();
+    const double cpuAtPresentStart = LogCpuFrames() > 0 ? GameThreadCpuMs() : 0.0;
     const auto ms = [](Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); };
     struct SequenceGuard {
         ~SequenceGuard() { s_presentSequenceActive.store(false, std::memory_order_release); }
@@ -1233,6 +1295,9 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             }
         }
         s_lastEnd = now;
+    }
+    if (presentedXfb) {
+        LogCpuOnPresent(cpuAtPresentStart);
     }
     if (LogFpsEnabled() && presentedXfb) {
         const Clock::time_point now = Clock::now();
