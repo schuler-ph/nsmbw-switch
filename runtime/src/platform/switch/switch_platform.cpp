@@ -697,6 +697,26 @@ void EarlyInit() noexcept {
             std::fprintf(stderr, "[switch] %s (launch argument)\n", item.c_str());
         }
     }
+    // Switch defaults (2026-11-10, reports switch-nacht1-spielthread and switch-wasser-zwei-spieler):
+    // measured A/B switches that are on unless env.txt or a --env= launch argument names the
+    // variable. Each stays switchable: NSMBW_GPU_TIMING=0, NSMBW_GX_HANDOFF=none, NSMBW_GXFAST=0,
+    // NSMBW_FSCACHE=0, NSMBW_REVERB_MT=0 restore the old path. NSMBW_WATERHLE stays off by default
+    // (native dispatcher untested in lava, poison and sand courses).
+    {
+        static constexpr const char* kDefaults[][2] = {
+            {"NSMBW_GPU_TIMING", "nosnap,gpucopy"},  // no full-EFB source snapshot, GPU staging copies
+            {"NSMBW_GX_HANDOFF", "overlap"},         // frame worker encodes in parallel after SEALED
+            {"NSMBW_GXFAST", "1"},                   // per-draw shortcuts for raw immediate-mode draws
+            {"NSMBW_FSCACHE", "1"},                  // disc read cache off the game thread
+            {"NSMBW_REVERB_MT", "1"},                // reverb block on a worker thread
+        };
+        for (const auto& item : kDefaults) {
+            if (std::getenv(item[0]) == nullptr) {
+                setenv(item[0], item[1], 1);
+                std::fprintf(stderr, "[switch] %s=%s (Switch default)\n", item[0], item[1]);
+            }
+        }
+    }
     // Decided while the statics initialized (guest_flat_memory.cpp); said here, after the launch
     // arguments, so the log shows the switch next to its effect.
     std::fprintf(stderr, "[switch] guest memory: %s\n", GuestFlat::SwitchAccessPathNote());
