@@ -1392,11 +1392,29 @@ void mark_copy_texture_sampled(const void* copyDest, GXState::CopyTextureRef& co
   const auto frame = gfx::current_frame();
   copyRef.lastSampledFrame = frame;
   copyRef.sampledThisFrame = true;
+  u32 lastProducedFrame = copyRef.lastProducedFrame;
 
   if (auto it = g_gxState.copyTextures.find(copyDest);
       it != g_gxState.copyTextures.end() && it->second.handle == copyRef.handle) {
     it->second.lastSampledFrame = frame;
     it->second.sampledThisFrame = true;
+    lastProducedFrame = std::max(lastProducedFrame, it->second.lastProducedFrame);
+  }
+
+  // NSMBW: a copy that lost draws to skip-unready mode (gfx/common.cpp, note_copy_pass_drops) and
+  // was not made again since is sampled with those draws missing. A copy made every frame is
+  // replaced before that matters; this catches the ones that are not. Once per destination.
+  if (copyRef.handle) {
+    if (const uint8_t incomplete = copyRef.handle->incompleteCopy.load(std::memory_order_relaxed);
+        incomplete != 0 && frame - lastProducedFrame > 2) {
+      static absl::flat_hash_set<const void*> s_loggedStale;
+      if (s_loggedStale.size() < 256 && s_loggedStale.insert(copyDest).second) {
+        Log.warn("Sampling an incomplete EFB copy: dest {} {}x{} fmt 0x{:x}, {} copy made at frame {} with dropped "
+                 "draws, not since (frame {}; {} such destinations)",
+                 copyDest, copyRef.width, copyRef.height, static_cast<unsigned>(copyRef.format),
+                 incomplete == 2 ? "non-recurring" : "recurring", lastProducedFrame, frame, s_loggedStale.size());
+      }
+    }
   }
 
   const GXState::CopyTextureKey key{

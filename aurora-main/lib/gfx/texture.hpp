@@ -65,6 +65,9 @@ struct TextureRef {
   u32 gxFormat;
   bool hasArbitraryMips = false;
   bool isReplacement = false;
+  // NSMBW: set by the frame worker when the last EFB copy into this texture dropped draws whose
+  // pipeline was still compiling (1 recurring copy, 2 non-recurring copy), cleared by a complete one.
+  std::atomic<uint8_t> incompleteCopy{0};
   // A static texture (new_static_texture_2d) is only described by the game thread that loads it: its
   // Dawn texture is made, and its texels written, by the frame worker (materialize, then
   // flush_deferred_texture_writes). Dawn takes one device-wide lock, which the worker holds through

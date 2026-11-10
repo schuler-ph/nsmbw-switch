@@ -269,6 +269,8 @@ static RenderPass& push_render_pass(RenderPass&& pass) {
 // The producer may build the next frame's GX stream while the worker prepares the target, and
 // this is the only renderer-owned property that path queries, so publish it explicitly.
 static std::atomic_bool g_inOffscreen{false};
+// Draws bind_pipeline dropped because their pipeline was still compiling (skip-unready mode).
+static std::atomic<uint64_t> g_droppedDraws{0};
 static std::optional<RenderPass> g_suspendedEfbPass;
 static Viewport g_suspendedEfbViewport;
 static ClipRect g_suspendedEfbScissor;
@@ -1406,6 +1408,41 @@ static const char* render_pass_label(u32 index) noexcept {
 static void render_pass_impl(const wgpu::RenderPassEncoder& pass, const std::vector<RenderPass>& passes, u32 idx,
                              int32_t interpolatedFrame, DebugFrameData& debugFrame);
 
+// NSMBW: which EFB copies lost draws to skip-unready mode. The copy target is marked incomplete
+// (1 = a recurring copy, 2 = a non-recurring copy, the pass that waits unless
+// skip_unready_persistent_passes); a later complete pass into it clears the mark, and
+// mark_copy_texture_sampled (gx.cpp) logs a sample of a marked copy that was not made again.
+// Only draws of the pass that ends in the copy are counted.
+static void note_copy_pass_drops(const RenderPass& passInfo, uint64_t dropped) noexcept {
+  // Only the frame worker encodes, so these need no lock; the mark is read on the GX thread.
+  static std::array<uint32_t, 3> s_logged{};  // log lines per kind, bounded
+  static uint64_t s_recurringDrops = 0;
+  constexpr std::array<uint32_t, 3> kLogBudget{0, 100, 300};
+  auto& target = *passInfo.resolveTarget;
+  const uint8_t previous = target.incompleteCopy.load(std::memory_order_relaxed);
+  if (dropped != 0) {
+    const uint8_t kind = passInfo.requireReadyPipelines ? 2 : 1;
+    target.incompleteCopy.store(std::max(kind, previous), std::memory_order_relaxed);
+    s_recurringDrops += kind == 1;
+    // A non-recurring copy is logged every time, a recurring one when it becomes incomplete.
+    if ((kind == 2 || previous == 0) && s_logged[kind] < kLogBudget[kind]) {
+      ++s_logged[kind];
+      Log.info("Copy pass dropped {} draws with unready pipelines: {}x{} fmt 0x{:x}, {} copy ({} recurring-copy "
+               "passes with drops so far)",
+               dropped, target.size.width, target.size.height, static_cast<unsigned>(passInfo.resolveFormat),
+               kind == 2 ? "non-recurring" : "recurring", s_recurringDrops);
+    }
+  } else if (previous != 0) {
+    target.incompleteCopy.store(0, std::memory_order_relaxed);
+    if (s_logged[previous] < kLogBudget[previous]) {
+      ++s_logged[previous];
+      Log.info("Copy {}x{} fmt 0x{:x} complete again ({} copy had dropped draws)", target.size.width,
+               target.size.height, static_cast<unsigned>(passInfo.resolveFormat),
+               previous == 2 ? "non-recurring" : "recurring");
+    }
+  }
+}
+
 static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEncoder& cmd, int32_t interpolatedFrame,
                         bool finalize, DebugFrameData& debugFrame, const depth_peek::FrameMapping& depthMapping) {
   ZoneScoped;
@@ -1456,9 +1493,13 @@ static void render_impl(std::vector<RenderPass>& renderPasses, wgpu::CommandEnco
         .depthStencilAttachment = &depthStencilAttachment,
     };
 
+    const uint64_t droppedBefore = g_droppedDraws.load(std::memory_order_relaxed);
     auto pass = cmd.BeginRenderPass(&renderPassDescriptor);
     render_pass_impl(pass, renderPasses, i, interpolatedFrame, debugFrame);
     pass.End();
+    if (encodeTextureBakes && passInfo.resolveTarget) {
+      note_copy_pass_drops(passInfo, g_droppedDraws.load(std::memory_order_relaxed) - droppedBefore);
+    }
 
     if (finalize && i == renderPasses.size() - 1) {
       depth_peek::encode_frame_snapshot(cmd, passInfo.copySourceDepthView, passInfo.targetSize, passInfo.msaaSamples, depthMapping);
@@ -1716,14 +1757,19 @@ bool bind_pipeline(PipelineRef ref, const wgpu::RenderPassEncoder& pass, Pipelin
   bool pipelineReady;
   if (!skip_unready_pipelines()) {
     pipelineReady = wait_pipeline(ref, pipeline);
-  } else if (requireReady) {
+  } else if (requireReady && !skip_unready_persistent_passes()) {
     // The pass resolves into a persistent texture (a one-shot bake such as MKW's minimap), so a
     // skipped draw would never be re-issued. These run behind loads, not mid-race.
     pipelineReady = wait_pipeline_for_persistent_pass(ref, pipeline);
   } else {
+    // NSMBW: with skip_unready_persistent_passes an EFB copy not made in the previous frame skips
+    // too. On the Switch that wait was the first-visit hitch (1.7 s in airship 4-37, 2026-11-10):
+    // an in-level pipeline takes ~0.5 s to compile there. render_impl counts the dropped draws per
+    // copy pass.
     pipelineReady = try_pipeline(ref, pipeline);
   }
   if (!pipelineReady) {
+    g_droppedDraws.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
   pass.SetPipeline(pipeline);
