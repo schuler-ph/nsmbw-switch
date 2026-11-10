@@ -402,7 +402,11 @@ struct AuroraVtxPublishOptions {
     int fmtLoopLast;
 };
 
+// NSMBW_LOG_CPU (diagnostics): full vertex-state publishes, counted for the per-frame log in vi.cpp.
+extern uint64_t g_gxVtxPublishCount;
+
 inline void PublishAuroraVtxState(GXVtxFmt fmt, const AuroraVtxPublishOptions& options) {
+    ++g_gxVtxPublishCount;
     for (int attr = 0; attr < 26; ++attr) {
         if (!options.includeNbt && attr == GX_VA_NBT) {
             continue;
