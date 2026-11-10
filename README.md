@@ -1,3 +1,10 @@
+> [!NOTE]
+> **This is a fork with an experimental Nintendo Switch 1 port** (homebrew, docked, no downloads:
+> you build it from your own disc). See [`projects/nsmbw/SWITCH.md`](projects/nsmbw/SWITCH.md). The
+> fork is based on [WitherBlitz/NSMB-Wii-Multiplayer-Recompilation](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation)
+> 0.4.0 (`2ff64f5`); its changes since then are listed under [Changes in this fork](#changes-in-this-fork).
+> Everything below this box is the upstream README, including its release links.
+
 **This is irrelevant to the recompilation, but I'm currently trying to find testers that're willing to test my new Android app out, it's multi-use and turns your phone into a PC once connected to a Monitor, or an Android TV when connected to a TV. If you're willing to test it, friend me at "WitherBlltz" on Discord. This is a Google Play Store Exclusive and doesn't work on IOS (yet)! you may need to pay 5 cents on the Play Store to download the app as a heads up! That was the minimum Google would let me put it as.**
 
 **support my coffee addiction, and the recompilation/decompilation on my cashapp! $WitherBlitz**
@@ -289,6 +296,7 @@ Android) and Python 3. The full steps, from Dolphin's extraction to the APK and 
 - The NSMBW project: [`projects/nsmbw`](projects/nsmbw) (translator config, function map, tools).
 - The runtime, retargeted from Mario Kart Wii to NSMBW: [`runtime`](runtime).
 - The Android app: [`android`](android).
+- The Nintendo Switch build (this fork): [`projects/nsmbw/SWITCH.md`](projects/nsmbw/SWITCH.md).
 - WiiCompiled's own README, for the translator and the runtime it comes from:
   [`docs/WiiCompiled-README.md`](docs/WiiCompiled-README.md).
 
@@ -357,10 +365,32 @@ New Super Mario Bros. Wii, the Android app, and LAN play.
 - **The NSMBW reverse-engineering community** - RootCubed's
   [NSMBW symbols](https://github.com/RootCubed/nsmbw-symbols), the NSMBW decompilation and the
   NSMBW address maps, which the function map is built from.
+- **[DriftDroid](https://github.com/dorPXP/driftdroid)** by dorPXP - Mario Kart Wii on Switch; the
+  Switch platform patches for Dawn (with the deko3d backend), SDL3, Abseil, SQLite and Tracy and parts
+  of the Switch runtime come from it (GPL-3.0).
+- **[WiiCompiled-Switch](https://github.com/yashin-sh/WiiCompiled-Switch)** by yashin-sh - the
+  recipe and patcher scripts for building Dawn for the Switch, fetched at build time (GPL-3.0).
+- **[devkitPro](https://devkitpro.org/)** - devkitA64, libnx, deko3d and the Switch tools;
+  **[libuam](https://github.com/averne/libuam)** - the shader compiler for deko3d.
 - Everyone in the static recompilation community.
 
 Bundled third-party components and their licenses live in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
+
+## Changes in this fork
+
+Modified from upstream `2ff64f5` (2026-11-05) by Philipp Schuler, November 2026, as required by
+section 5 of the GPLv3. The full list is `git diff 2ff64f5`; in short:
+
+- A Nintendo Switch platform layer: `runtime/src/platform/switch/`, `aurora-main/lib/switch/`, the
+  Switch patches under `aurora-main/cmake/patches/` and `projects/nsmbw/tools/patches/`, and the build
+  scripts `build-switch-deps.sh` and `build-switch.sh`.
+- Speed-ups for the Switch's CPU and GPU: a flat guest memory path, a separate GX thread, faster FIFO
+  and pipeline handling, a native reverb, a high-level path for water effects, and Switch defaults for
+  these.
+- Measurement and diagnostics: a frame/game-speed monitor, a guest profiler and a development link
+  for test runs (the link stays off unless `sdmc:/switch/nsmbw/devhost.txt` exists).
+- Changes to disc reading (read cache), Wii Remote input and the runtime build files for the Switch.
 
 ## License
 

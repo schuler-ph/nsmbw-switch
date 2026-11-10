@@ -187,6 +187,38 @@ unmodified, with their license texts, in the installer's `licenses/` folder.
 
 ---
 
+## Nintendo Switch build (this fork)
+
+The Switch build ([`projects/nsmbw/SWITCH.md`](projects/nsmbw/SWITCH.md)) has no release downloads;
+it is built locally. It additionally links the components below into `nsmbw.nro`, besides the ones
+from the table above that it builds for the Switch (SDL, Abseil, SQLite, Tracy, Mbed TLS and the
+others listed there).
+
+| Component | Version | License | Upstream | Use |
+| --- | --- | --- | --- | --- |
+| libnx | 4.12.0 | ISC | <https://github.com/switchbrew/libnx> | Switch system library |
+| deko3d | 0.5.0 | zlib | <https://github.com/devkitPro/deko3d> | GPU API |
+| switch-mesa (libEGL, libGLESv2) | 20.1 | MIT | <https://github.com/devkitPro/mesa> | GL entry points (`aurora-main/lib/switch/gl_proc_table.c` is generated from its symbol list) |
+| devkitA64 (GCC, newlib, libstdc++) | r29.2 | GPL-3.0 with GCC Runtime Library Exception; newlib under BSD-style licenses | <https://devkitpro.org/> | toolchain and C/C++ runtime |
+| libuam | `f8c9eef` | zlib (Copyright (C) 2018-2020 fincs); files in `mesa-imported/` MIT | <https://github.com/averne/libuam> | GLSL to DKSH shader compiler, linked into Dawn |
+| Dawn (WebGPU) with deko3d backend | `13abc3bc` | BSD-3-Clause | <https://dawn.googlesource.com/dawn> | built from source by `build-switch-deps.sh` |
+
+Code taken from other projects:
+
+- **DriftDroid** - GPL-3.0, Copyright (c) dorPXP and contributors.
+  Source: <https://github.com/dorPXP/driftdroid>, commit `9684e3a`. The Switch platform patches
+  `aurora-main/cmake/patches/{dawn,sdl3,abseil,abseil-dawn-pinned,sqlite3,tracy}-nintendo-switch-platform.patch`
+  are taken from it unchanged; the Dawn patch contains Dawn's deko3d backend. Parts of
+  `runtime/src/platform/switch/`, `runtime/include/platform/switch_platform.h`,
+  `runtime/include/host_file_copy.h` and other runtime files are ported from it; each such file names
+  its DriftDroid source in its header comment.
+- **WiiCompiled-Switch** - GPL-3.0, by yashin-sh.
+  Source: <https://github.com/yashin-sh/WiiCompiled-Switch>, commit `b851db9`. Not stored here:
+  `projects/nsmbw/tools/build-switch-deps.sh` follows its `scripts/prepare-native-deko3d-deps.sh` and
+  fetches its two Dawn patcher scripts at that commit, checked by SHA-256.
+
+---
+
 ## Development-only dependencies
 
 Not redistributed in any release artifact.
