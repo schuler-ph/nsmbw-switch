@@ -9,6 +9,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "isa/ppc_isa_tls.h"
+
 namespace GuestFlat {
 
 // Fixed base so the emitted access is `[reg + imm64-in-register]` with no load
@@ -112,7 +114,7 @@ inline constexpr bool RequiresCheckedAccess() noexcept { return false; }
 // Const, set from the page size while the library initializes: a store through a flat guest pointer
 // (a memcpy, which may alias any object) cannot change it, so the compiler loads it once per
 // function instead of again after every guest store.
-extern const bool g_requiresCheckedAccess;
+extern const bool g_requiresCheckedAccess MKW_GUEST_TABLE_VISIBILITY;
 inline bool RequiresCheckedAccess() noexcept { return g_requiresCheckedAccess; }
 #endif
 #if defined(__SWITCH__)

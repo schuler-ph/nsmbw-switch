@@ -62,10 +62,10 @@ inline constexpr uint32_t kExecutableWriteGuardCoarsePageCount = 1u << (32 - kEx
 inline constexpr uint32_t kExecutableWriteGuardMidPageShift = 16;
 inline constexpr uint32_t kExecutableWriteGuardMidPageCount = 1u << (32 - kExecutableWriteGuardMidPageShift);
 
-extern std::atomic<bool> g_executableWriteGuardEnabled;
-extern std::atomic<uint8_t> g_executableWriteGuardPages[kExecutableWriteGuardPageCount];
-extern std::atomic<uint8_t> g_executableWriteGuardCoarsePages[kExecutableWriteGuardCoarsePageCount];
-extern std::atomic<uint8_t> g_executableWriteGuardMidPages[kExecutableWriteGuardMidPageCount];
+extern std::atomic<bool> g_executableWriteGuardEnabled MKW_GUEST_TABLE_VISIBILITY;
+extern std::atomic<uint8_t> g_executableWriteGuardPages[kExecutableWriteGuardPageCount] MKW_GUEST_TABLE_VISIBILITY;
+extern std::atomic<uint8_t> g_executableWriteGuardCoarsePages[kExecutableWriteGuardCoarsePageCount] MKW_GUEST_TABLE_VISIBILITY;
+extern std::atomic<uint8_t> g_executableWriteGuardMidPages[kExecutableWriteGuardMidPageCount] MKW_GUEST_TABLE_VISIBILITY;
 
 // Two initializer phases, both emitted by the translator's mod data-patch
 // writer. (A third, plain RegisterInitializer/RunInitializers pair existed with

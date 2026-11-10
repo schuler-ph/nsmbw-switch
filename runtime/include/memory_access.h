@@ -42,17 +42,17 @@ struct PageEntry {
     uint32_t limit = 0;
 };
 
-extern PageEntry g_pageTable[kPageCount];
+extern PageEntry g_pageTable[kPageCount] MKW_GUEST_TABLE_VISIBILITY;
 // Encoded (host page base - guest page base) + 1 for full pages whose next
 // page is contiguous. This permits any native access up to 8 bytes without a
 // per-access mask/limit check. Zero retains the general PageEntry fallback.
-extern uintptr_t g_fullPageBias[kPageCount];
+extern uintptr_t g_fullPageBias[kPageCount] MKW_GUEST_TABLE_VISIBILITY;
 // Runtime-active readable biases. Deferred-read pages clear these entries once
 // instead of paying a mode branch on every translated read.
-extern uintptr_t g_fullReadablePageBias[kPageCount];
+extern uintptr_t g_fullReadablePageBias[kPageCount] MKW_GUEST_TABLE_VISIBILITY;
 // Same encoding, but only for pages proven not to contain executable bytes.
 // Executable-range registration invalidates entries before guest execution.
-extern uintptr_t g_fullWritablePageBias[kPageCount];
+extern uintptr_t g_fullWritablePageBias[kPageCount] MKW_GUEST_TABLE_VISIBILITY;
 
 // Allocated only for mapped 1 MiB pages that contain both executable and data
 // 4 KiB pages. Entries use the same encoded host bias as the coarse table.
@@ -61,13 +61,13 @@ extern uintptr_t g_fullWritablePageBias[kPageCount];
 struct SparseWritablePageTable {
     uintptr_t encodedBias[kWritableSubPagesPerPage]{};
 };
-extern const SparseWritablePageTable* g_sparseWritablePageTables[kPageCount];
+extern const SparseWritablePageTable* g_sparseWritablePageTables[kPageCount] MKW_GUEST_TABLE_VISIBILITY;
 
 // Nonzero while any registered deferred read overlaps the page. Small
 // mappings (e.g. the 16 KiB locked cache) have no coarse bias entry, so a
 // zero readable bias alone cannot distinguish "deferred content pending"
 // from "small but plain memory"; range resolution needs the explicit flag.
-extern uint8_t g_deferredReadCoveredPages[kPageCount];
+extern uint8_t g_deferredReadCoveredPages[kPageCount] MKW_GUEST_TABLE_VISIBILITY;
 
 MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD uint8_t Read8Slow(uint32_t addr);
 MKW_MEMORY_NO_INLINE MKW_MEMORY_COLD uint16_t Read16Slow(uint32_t addr);

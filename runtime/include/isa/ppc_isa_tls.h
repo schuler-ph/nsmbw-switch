@@ -50,3 +50,16 @@ __attribute__((always_inline)) inline uintptr_t MkwSwitchThreadPointer() noexcep
 #define MKW_HOT_TLS_ACCESSOR(accessor, type, variable, asm_symbol)                        \
     inline type& accessor() noexcept { return variable; }
 #endif
+
+// Guest-memory tables every translated load/store reads (memory_access.h, guest_flat_memory.h,
+// recomp_mod_loader.h). A default-visibility extern is reached through the GOT in -fPIC and
+// -fPIE code alike (adrp + ldr of the address, then the real load); about 195k of the 220k GOT
+// loads in the Switch build are these seven tables. Hidden visibility makes them direct
+// PC-relative accesses, as g_switchFlatGuestBase already is. Only with the CMake option
+// MKW_SWITCH_PIE_OBJECTS (it defines MKW_SWITCH_HIDDEN_GUEST_TABLES); everything links into the
+// one static .nro, so nothing outside the executable can need these symbols.
+#if defined(__SWITCH__) && defined(MKW_SWITCH_HIDDEN_GUEST_TABLES)
+#define MKW_GUEST_TABLE_VISIBILITY __attribute__((visibility("hidden")))
+#else
+#define MKW_GUEST_TABLE_VISIBILITY
+#endif

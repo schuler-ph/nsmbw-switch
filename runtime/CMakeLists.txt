@@ -84,6 +84,9 @@ if(MKW_PLATFORM_SWITCH)
         "Switch: compile runtime, translated shards and aurora -fPIE instead of -fPIC" OFF)
     if(MKW_SWITCH_PIE_OBJECTS)
         set(MKW_SWITCH_CODE_MODEL_FLAG -fPIE)
+        # -fPIE alone still reaches every *extern* global through the GOT; the guest-memory tables
+        # that every translated load/store reads become hidden (isa/ppc_isa_tls.h).
+        add_compile_definitions(MKW_SWITCH_HIDDEN_GUEST_TABLES=1)
     endif()
 endif()
 
