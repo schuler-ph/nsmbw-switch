@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -1111,6 +1112,15 @@ static void pipeline_worker() {
       if (background) {
         ++g_activeBackgroundPipelineWorkers;
       }
+    }
+    // NSMBW_PIPELINE_DELAY_MS=<ms> (test aid for desktop builds): hold every first-use pipeline that
+    // long before compiling it, as the Switch needs ~500 ms for one in a level. Prewarm is not held.
+    static const long s_delayMs = [] {
+      const char* value = std::getenv("NSMBW_PIPELINE_DELAY_MS");
+      return value != nullptr ? std::atol(value) : 0L;
+    }();
+    if (!background && s_delayMs > 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(s_delayMs));
     }
     compile_pending_pipeline(std::move(pending));
     if (background) {
