@@ -9,6 +9,8 @@
 
 #include <SDL3/SDL_gamepad.h>
 #include <SDL3/SDL_joystick.h>
+#include <SDL3/SDL_sensor.h>
+#include <SDL3/SDL_timer.h>
 #include <switch.h>
 
 #include <algorithm>
@@ -18,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <iterator>
 
 extern "C" void AuroraSwitchRestoreControllers();  // end of file
@@ -93,20 +96,22 @@ struct SidewaysButton {
 };
 
 // The four face buttons by position (A east, B south, X north, Y west, as on a full controller);
-// SL/SR are the shoulders, used as ZL/ZR so they reach the game's L (item) and R (drift) as on
-// Mario Kart 8; the stick click is the D-pad's Up (trick and wheelie). The one +/- button is not
-// in these tables: a tap is Start (pause) and holding it opens the quick panel, see update().
+// SL/SR are the shoulders, used as ZL/ZR (in NSMBW both shake: the spin jump). The stick click is
+// L, which NSMBW reads as the remote's A (the bubble in multiplayer, dAcPy_c::setBalloonButtonA):
+// a sideways Joy-Con has no L of its own, and the D-pad Up it pressed for Mario Kart (trick) is the
+// stick pushed up anyway. The one +/- button is not in these tables: a tap is Start (pause) and
+// holding it presses Back (the remote's -), see update().
 constexpr SidewaysButton kLeftSideways[] = {
     {HidNpadButton_Down, HidNpadButton_A},       {HidNpadButton_Left, HidNpadButton_B},
     {HidNpadButton_Right, HidNpadButton_X},      {HidNpadButton_Up, HidNpadButton_Y},
     {HidNpadButton_LeftSL, HidNpadButton_ZL},    {HidNpadButton_LeftSR, HidNpadButton_ZR},
-    {HidNpadButton_StickL, HidNpadButton_Up},
+    {HidNpadButton_StickL, HidNpadButton_L},
 };
 constexpr SidewaysButton kRightSideways[] = {
     {HidNpadButton_X, HidNpadButton_A},          {HidNpadButton_A, HidNpadButton_B},
     {HidNpadButton_Y, HidNpadButton_X},          {HidNpadButton_B, HidNpadButton_Y},
     {HidNpadButton_RightSL, HidNpadButton_ZL},   {HidNpadButton_RightSR, HidNpadButton_ZR},
-    {HidNpadButton_StickR, HidNpadButton_Up},
+    {HidNpadButton_StickR, HidNpadButton_L},
 };
 
 // A sideways Joy-Con has neither two sticks to click nor a Minus on the right one, so its +/- button
@@ -153,7 +158,34 @@ struct Player {
   std::chrono::steady_clock::time_point menuSince{};
   std::chrono::steady_clock::time_point tapUntil{};
   std::chrono::steady_clock::time_point panelUntil{};
+  // The accelerometer as the gamepad's SDL sensor (send_motion): on once SDL is asked for its data.
+  std::atomic<bool> sensorOn{false};
+  float sentAccel[3]{};
+  bool sentAccelAny = false;
+  u32 accelLoggedStyle = 0xFFFFFFFFu;
 };
+
+// NSMBW_SWITCH_MOTION (env.txt): which controllers hand their motion sensors to the game as the
+// Wii Remote's tilt and shake. "on" (default): every controller, the console itself in handheld
+// too; "nohandheld": not the console (tilting the screen while looking at it), Joy-Cons and Pro
+// Controllers still do; "off": none, the buttons and the right stick only (the game then sees a
+// gamepad without sensors, as on a PC pad without them).
+enum class MotionMode { On, NoHandheld, Off };
+MotionMode motion_mode() {
+  static const MotionMode mode = [] {
+    const char* value = std::getenv("NSMBW_SWITCH_MOTION");
+    MotionMode m = MotionMode::On;
+    if (value != nullptr && std::strcmp(value, "off") == 0) {
+      m = MotionMode::Off;
+    } else if (value != nullptr && std::strcmp(value, "nohandheld") == 0) {
+      m = MotionMode::NoHandheld;
+    }
+    std::printf("[switch-pad] motion sensors: %s\n",
+                m == MotionMode::Off ? "off" : m == MotionMode::NoHandheld ? "on, not in handheld" : "on");
+    return m;
+  }();
+  return mode;
+}
 
 Player g_players[kPlayers];
 bool g_attached = false;
@@ -169,6 +201,19 @@ constexpr const char* kNames[kPlayers] = {
 
 void SDLCALL update(void* userdata);
 bool SDLCALL rumble(void* userdata, Uint16 low, Uint16 high);
+
+// The runtime (VirtualRemote::ApplyControllerMotion) turns the sensor on when it finds it.
+bool SDLCALL set_sensors_enabled(void* userdata, bool enabled) {
+  Player& player = *static_cast<Player*>(userdata);
+  player.sensorOn.store(enabled, std::memory_order_relaxed);
+  player.sentAccelAny = false;
+  std::printf("[switch-pad] player %zu motion: SDL accelerometer %s\n",
+              static_cast<size_t>(&player - g_players) + 1, enabled ? "on" : "off");
+  return true;
+}
+
+// One accelerometer per gamepad, read on every update; HID samples the sensors at 200 Hz.
+constexpr SDL_VirtualJoystickSensorDesc kSensors[] = {{SDL_SENSOR_ACCEL, 60.0f}};
 
 void open_player(size_t index) {
   Player& player = g_players[index];
@@ -186,6 +231,14 @@ void open_player(size_t index) {
   desc.userdata = &player;
   desc.Update = update;
   desc.Rumble = rumble;
+  if (motion_mode() != MotionMode::Off) {
+    desc.nsensors = static_cast<Uint16>(std::size(kSensors));
+    desc.sensors = kSensors;
+    desc.SetSensorsEnabled = set_sensors_enabled;
+  }
+  player.sensorOn.store(false, std::memory_order_relaxed);
+  player.sentAccelAny = false;
+  player.accelLoggedStyle = 0xFFFFFFFFu;
   player.joystickId = SDL_AttachVirtualJoystick(&desc);
   if (player.joystickId == 0) {
     return;
@@ -526,6 +579,39 @@ void set_axis(Player& player, size_t slot, SDL_GamepadAxis axis, Sint16 value) {
   }
 }
 
+// The accelerometer of the console or controller the player holds, as the gamepad's SDL sensor,
+// for the runtime's Wii Remote tilt and shake (VirtualRemote::ApplyControllerMotion). HID gives g
+// in its own frame, x to the controller's right, y to its top, z out of its face, read as gravity:
+// lying flat face up it says z = -1, and rolled clockwise (right side down) x goes positive, the
+// way the tilt steering above reads it. SDL wants m/s^2 as the push that holds the controller up:
+// x right, y out of the face (flat: +9.8), z towards the player. A sideways Joy-Con comes already
+// turned (read_acceleration). Without a reading (no sensor answers, or handheld with
+// NSMBW_SWITCH_MOTION=nohandheld) it sends zeros, which the runtime takes as "no data yet", so an
+// old reading never stays as a held tilt.
+void send_motion(size_t index, Player& player) {
+  float data[3] = {0.0f, 0.0f, 0.0f};
+  const u32 style = padGetStyleSet(&player.pad);
+  const bool handheld = index == 0 && single_joycon(style) == SingleJoyCon::None &&
+                        (style & HidNpadStyleTag_NpadHandheld) != 0;
+  HidVector a{};
+  if (!(handheld && motion_mode() == MotionMode::NoHandheld) && read_acceleration(index, player.pad, a)) {
+    data[0] = -a.x * SDL_STANDARD_GRAVITY;
+    data[1] = -a.z * SDL_STANDARD_GRAVITY;
+    data[2] = a.y * SDL_STANDARD_GRAVITY;
+    if (style != player.accelLoggedStyle) {
+      player.accelLoggedStyle = style;
+      std::printf("[switch-pad] player %zu motion: first reading %s: hid (%.2f %.2f %.2f) g -> sdl (%.1f %.1f %.1f) m/s^2\n",
+                  index + 1, handheld ? "handheld" : "controller", a.x, a.y, a.z, data[0], data[1], data[2]);
+    }
+  }
+  if (player.sentAccelAny && std::memcmp(data, player.sentAccel, sizeof(data)) == 0) {
+    return;
+  }
+  std::memcpy(player.sentAccel, data, sizeof(data));
+  player.sentAccelAny = true;
+  SDL_SendJoystickVirtualSensorData(player.joystick, SDL_SENSOR_ACCEL, SDL_GetTicksNS(), data, 3);
+}
+
 void SDLCALL update(void* userdata) {
   Player& player = *static_cast<Player*>(userdata);
   if (player.joystick == nullptr) {
@@ -639,6 +725,9 @@ void SDLCALL update(void* userdata) {
   set_axis(player, 4, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, (held & HidNpadButton_ZL) != 0 ? SDL_JOYSTICK_AXIS_MAX : 0);
   set_axis(player, 5, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, (held & HidNpadButton_ZR) != 0 ? SDL_JOYSTICK_AXIS_MAX : 0);
   player.sentAny = true;
+  if (player.sensorOn.load(std::memory_order_relaxed)) {
+    send_motion(index, player);
+  }
 }
 
 } // namespace
