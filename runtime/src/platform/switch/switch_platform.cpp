@@ -700,8 +700,9 @@ void EarlyInit() noexcept {
     // Switch defaults (2026-11-10, reports switch-nacht1-spielthread and switch-wasser-zwei-spieler):
     // measured A/B switches that are on unless env.txt or a --env= launch argument names the
     // variable. Each stays switchable: NSMBW_GPU_TIMING=0, NSMBW_GX_HANDOFF=none, NSMBW_GXFAST=0,
-    // NSMBW_FSCACHE=0, NSMBW_REVERB_MT=0 restore the old path. NSMBW_WATERHLE stays off by default
-    // (native dispatcher untested in lava, poison and sand courses).
+    // NSMBW_FSCACHE=0, NSMBW_REVERB_MT=0 restore the old path.
+    // NSMBW_WATERHLE=1 (2026-11-10, report switch-waterhle-wasserarten): the ordinary water surface
+    // as one GXBegin; it only acts on that water (lava and poison keep their path). =0 turns it off.
     // NSMBW_SKIPUNREADY=all (2026-11-10, report switch-pipeskip): a draw whose pipeline is still
     // compiling is skipped in every pass, also in an EFB copy not made in the previous frame; that
     // wait hung the first visit of airship 4-37 for 1.7 s. NSMBW_SKIPUNREADY=1 restores the wait
@@ -714,6 +715,7 @@ void EarlyInit() noexcept {
             {"NSMBW_FSCACHE", "1"},                  // disc read cache off the game thread
             {"NSMBW_SKIPUNREADY", "all"},            // never wait for a compiling pipeline mid-level
             {"NSMBW_REVERB_MT", "1"},                // reverb block on a worker thread
+            {"NSMBW_WATERHLE", "1"},                 // water surface quads as one GXBegin
         };
         for (const auto& item : kDefaults) {
             if (std::getenv(item[0]) == nullptr) {
