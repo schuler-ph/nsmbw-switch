@@ -79,6 +79,12 @@ uint32_t aurora_get_frame_interpolation_fps();
 // ready are skipped rather than stalling submission, and pick it up once compilation finishes.
 void aurora_set_skip_unready_pipelines(bool enabled);
 bool aurora_get_skip_unready_pipelines();
+// NSMBW: also skip such draws in a pass whose EFB copy may be a one-shot bake (a color copy not
+// produced in the previous frame). Off by default: those passes wait for their pipelines, because a
+// copy that is never made again keeps the missing draws. On, the frame worker never waits for a
+// pipeline; the log names every copy that lost draws and every later sample of one not made since.
+void aurora_set_skip_unready_persistent_passes(bool enabled);
+bool aurora_get_skip_unready_persistent_passes();
 uint32_t aurora_get_queued_pipeline_count();
 
 // Controls whether display copies bypass the Wii's vertical copy filter.

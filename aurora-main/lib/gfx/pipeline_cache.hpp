@@ -22,6 +22,9 @@ void begin_pipeline_frame();
 void end_pipeline_frame();
 void set_skip_unready_pipelines(bool enabled) noexcept;
 bool skip_unready_pipelines() noexcept;
+// With skip_unready_pipelines: skip in requireReadyPipelines passes too (aurora_set_skip_unready_persistent_passes).
+void set_skip_unready_persistent_passes(bool enabled) noexcept;
+bool skip_unready_persistent_passes() noexcept;
 uint32_t queued_pipeline_count() noexcept;
 
 template <typename Config>
