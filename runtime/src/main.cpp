@@ -1611,6 +1611,17 @@ int RuntimeMain(int argc, char** argv) {
         auroraConfig.allowTextureReplacements = RuntimeConfigFile::TextureReplacements(false);
         auroraConfig.allowTextureDumps = auroraConfig.allowTextureReplacements &&
                                          RuntimeConfigFile::TextureDumps(false);
+        // NSMBW_TEXREPL overrides both keys for one launch (env.txt or a --env= argument on the
+        // Switch, so an A/B run leaves the player's Config.toml alone): 0 off, 1 replacements,
+        // dump replacements plus dumps of every unmatched texture.
+        if (const char* texRepl = std::getenv("NSMBW_TEXREPL"); texRepl != nullptr && texRepl[0] != 0) {
+            const bool dump = std::strcmp(texRepl, "dump") == 0;
+            auroraConfig.allowTextureReplacements = dump || texRepl[0] != '0';
+            auroraConfig.allowTextureDumps = dump;
+            RT_LOG(RT_TAG_RUNTIME) << "NSMBW_TEXREPL=" << texRepl << ": texture replacements "
+                                   << (auroraConfig.allowTextureReplacements ? "on" : "off") << ", dumps "
+                                   << (auroraConfig.allowTextureDumps ? "on" : "off") << std::endl;
+        }
         // No vsync knob: aurora always configures a non-blocking present mode.
         auroraConfig.desiredBackend = BACKEND_AUTO;
         // GPU driver workarounds: picked from the graphics adapter unless the player forced them.

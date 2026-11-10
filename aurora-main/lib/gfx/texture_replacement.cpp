@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <list>
@@ -519,6 +520,7 @@ void build_index() noexcept {
     return;
   }
 
+  const auto indexStart = std::chrono::steady_clock::now();
   std::error_code ec;
   for (std::filesystem::recursive_directory_iterator it(
            s_replacementRoot,
@@ -556,7 +558,8 @@ void build_index() noexcept {
     s_replacementIndex.try_emplace(*parsed, path);
   }
 
-  Log.info("Indexed {} texture replacements", s_replacementIndex.size());
+  Log.info("Indexed {} texture replacements in {:.1f} ms", s_replacementIndex.size(),
+           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - indexStart).count());
 }
 
 const ReplacementIndexEntry* find_replacement_path(const RuntimeTextureKey& key) noexcept {
