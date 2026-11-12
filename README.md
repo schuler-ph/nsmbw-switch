@@ -1,67 +1,42 @@
-# NSMB Wii Multiplayer Recompilation, with a Nintendo Switch port
+# New Super Mario Bros. Wii for Nintendo Switch
 
 <p align="center">
-  <a href="https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest"><img alt="Android 9+, arm64" src="https://img.shields.io/badge/Android-9%2B%20%C2%B7%20arm64-3DDC84?logo=android&amp;logoColor=white"></a>
-  <a href="https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest"><img alt="Windows 10 / 11, x64" src="https://img.shields.io/badge/Windows-10%20%2F%2011%20%C2%B7%20x64-0078D4"></a>
-  <a href="https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest"><img alt="Linux, x86-64" src="https://img.shields.io/badge/Linux-x86--64-FCC624?logo=linux&amp;logoColor=black"></a>
-</p>
-<p align="center">
-  <a href="#building-from-source"><img alt="PowerPC static recompilation" src="https://img.shields.io/badge/PowerPC-static%20recompilation-FF9F0A"></a>
-  <a href="https://github.com/patchzyy/Wiicompiled"><img alt="Built on WiiCompiled" src="https://img.shields.io/badge/built%20on-WiiCompiled-8B5CF6"></a>
+  <a href="#build"><img alt="Nintendo Switch homebrew (.nro)" src="https://img.shields.io/badge/Nintendo%20Switch-homebrew%20.nro-E60012"></a>
+  <a href="#faq"><img alt="PowerPC static recompilation" src="https://img.shields.io/badge/PowerPC-static%20recompilation-FF9F0A"></a>
   <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-2EA44F?logo=gnu&amp;logoColor=white"></a>
 </p>
 
-A native port of New Super Mario Bros. Wii for Android phones and Windows and Linux PCs, made with
-static recompilation.
+A native **Nintendo Switch homebrew port of New Super Mario Bros. Wii (NSMBW)**, made with static
+recompilation: the game's PowerPC code is translated to C++ and compiled for the Switch's ARM CPU
+ahead of time. No emulator, no interpreter, no JIT. It runs as an `.nro` from hbmenu on a Switch 1
+with Atmosphère, with local multiplayer for up to four players on Joy-Cons and Pro Controllers.
 
-There's no emulator in the loop, no interpreter, no JIT, no PowerPC anywhere at runtime.
-
-> [!NOTE]
-> **This is a fork that adds a Nintendo Switch 1 port** (homebrew; you build it yourself from your
-> own disc, there are no Switch downloads): see [Nintendo Switch](#nintendo-switch). It builds
-> entirely on [WitherBlitz](https://github.com/WitherBlitz)'s
-> [NSMB Wii Multiplayer Recompilation](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation),
-> version 0.4.0 (`2ff64f5`): the recompiled game, its runtime and everything for Android, Windows and
-> Linux are his work, described in the rest of this README. The Switch port and its changes are
-> listed under [Changes in this fork](#changes-in-this-fork). Releases, the Android app and the PC
-> versions come from [his repository](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest).
-
-**Port made by [WitherBlitz](https://github.com/WitherBlitz) with the help of
-[WiiCompiled](https://github.com/patchzyy/Wiicompiled)'s code, and was entirely coded by
-Claude Opus 5.5.**
+This is a fork of [WitherBlitz](https://github.com/WitherBlitz)'s
+[NSMB Wii Multiplayer Recompilation](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation),
+which this Switch port builds on.
 
 > [!IMPORTANT]
-> There are no game files in this project or its releases: no disc image, no levels, music,
-> graphics or sounds. You need your own copy of **New Super Mario Bros. Wii (USA, `SMNE01`,
-> revision 1)** and [Dolphin](https://dolphin-emu.org/) on a computer to extract it. The downloads do
-> contain the game's code, translated to native code, the way KartPad's do. See
-> [What the downloads contain](#what-the-downloads-contain).
+> There are no game files and no downloads here: no disc image, no levels, music, graphics or
+> sounds, and no prebuilt `.nro`. You build it yourself from your own copy of
+> **New Super Mario Bros. Wii (USA, `SMNE01`, revision 1)**, extracted with
+> [Dolphin](https://dolphin-emu.org/). The `.nro` you build contains the game's translated code, so
+> do not share it.
 
-[I just want to play](#installing)
+## Features
 
-<p align="center">
-  <img src="docs/screenshots/android-title.webp" alt="New Super Mario Bros. Wii running natively on an Android phone, with the on-screen Wii Remote controls" width="800">
-  <br><sub>Running natively on Android at 60 fps, with the on-screen sideways Wii Remote.</sub>
-</p>
+- **Native on the Switch:** the whole game is compiled to AArch64 code; graphics run through
+  [aurora](https://github.com/encounter/aurora) on Dawn's deko3d backend, the Switch's own GPU API.
+- **Local multiplayer:** up to four players on Joy-Con pairs, single sideways Joy-Cons, Pro
+  Controllers or the console in handheld mode (measured with two players so far).
+- **Switch button layout and motion controls:** jump on A/B, run on Y/X, spin on the triggers, tilt and
+  shake with the controller's motion sensors (see [Controls](#controls)).
+- **Full speed docked:** 59-60 fps at 98-99.8 % game speed in the measured levels, docked with the CPU
+  at 1785 MHz (see [Performance](#performance)).
 
----
+## Performance
 
-## Nintendo Switch
-
-The Switch port runs the same translated game code as the Linux build, as a homebrew program
-(`nsmbw.nro`), with a Switch platform layer, aurora on Dawn's deko3d backend, and libnx. There are
-**no Switch downloads**: you build it from your own disc. The `.nro` contains the game's translated
-code, so do not share it.
-
-> [!IMPORTANT]
-> You need your own **USA `SMNE01` revision 1** disc, extracted with Dolphin (see
-> [Getting the game files](#getting-the-game-files)), and a Switch that runs custom firmware. Nothing
-> here tells you how to get either.
-
-### What has been measured
-
-On one Switch 1 (Erista, Atmosphère), **docked, with the CPU at 1785 MHz** set by sys-clk (GPU 768
-MHz, memory 1600 MHz), two players, builds of this fork from November 2026 with no options set:
+Measured on one Switch 1 (Erista, Atmosphère), **docked, with the CPU at 1785 MHz** set by sys-clk
+(GPU 768 MHz, memory 1600 MHz), two players, builds from November 2026 with no options set:
 
 - Levels 1-1, 4-1 (water), 2-3 (spotlights), 1-4, 4-37 (airship), castle 1 (lava) and 5-3 (poison):
   59-60 fps in the level, 98.1-99.8 % game speed, audio at or above 99.6 % speed.
@@ -74,30 +49,53 @@ Not measured so far: other levels and a full playthrough, handheld mode with the
 other Switch models (Mariko, Lite, OLED). Reports are welcome. Raising clocks with sys-clk is at your
 own risk.
 
-### What you need
+## Requirements
 
 - A Switch 1 with Atmosphère and hbmenu. Start hbmenu through a title override (hold R while
   starting a game), not from the album: the game needs the memory of a full application.
 - [sys-clk](https://github.com/retronx-team/sys-clk) with a CPU profile of 1785 MHz for this
   program while docked, for full speed.
-- A Linux machine or WSL2 (tested: Ubuntu 24.04) with about 20 GB free besides your extracted disc, and 16 GB of RAM.
+- Your own **USA `SMNE01` revision 1** disc of New Super Mario Bros. Wii and Dolphin on a computer
+  to extract it. Other regions and revisions are rejected: the port hooks the game at exact
+  addresses.
+- A Linux machine or WSL2 (tested: Ubuntu 24.04) with about 20 GB free besides your extracted disc,
+  and 16 GB of RAM.
 - devkitPro with devkitA64, libnx, deko3d, switch-mesa and switch-tools. Tested versions: the
   `devkitpro/devkita64:20260219` Docker image (devkitA64 r29.2, libnx 4.12.0, deko3d 0.5.0,
   switch-tools 1.13.1).
-- Everything the Linux build needs for translating the game
+- The .NET 8 SDK, Python 3, CMake, Ninja and Clang for translating the game
   ([`projects/nsmbw/BUILDING.md`](projects/nsmbw/BUILDING.md), sections 1-3 and 6), plus `meson`,
   `bison`, `flex` and `python3-mako` for the graphics dependencies.
 
-### Build
+> [!NOTE]
+> Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
+> game files won't be provided or tolerated.
 
-1. Translate the game as for Linux ([`BUILDING.md`](projects/nsmbw/BUILDING.md), section 6).
-   `build-linux.sh` runs steps 2 and 3 and fills `generated/`; the Switch build uses the same
-   translated code.
+## Getting the game files
 
-2. Build Dawn with the deko3d backend and libuam once (about 7 minutes plus the download on a 16-thread PC with 8 jobs). The script
-   downloads Dawn (with its submodules), libuam and two patcher scripts from WiiCompiled-Switch at
-   pinned commits into the folder you give it, applies the patches from this repository and builds
-   both as static libraries:
+You do this once, with Dolphin on a computer:
+
+1. In Dolphin, right-click **New Super Mario Bros. Wii** and choose **Properties**.
+2. Check the **Info** tab: the game ID must be `SMNE01` and the revision **1**.
+3. Open the **Filesystem** tab, right-click the disc at the top and choose **Extract Entire Disc**.
+   Pick an empty folder. You get a folder with `files` and `sys` in it.
+
+## Build
+
+1. Translate the game ([`BUILDING.md`](projects/nsmbw/BUILDING.md), section 6). `build-linux.sh`
+   checks your disc, translates its code into `generated/` and also builds a Linux version; the
+   Switch build uses the same translated code (about 5 minutes):
+
+   ```
+   python3 projects/nsmbw/tools/unpack_game.py <your extracted game folder>
+   python3 projects/nsmbw/tools/prelink_rels.py
+   projects/nsmbw/tools/build-linux.sh --game <your extracted game folder>
+   ```
+
+2. Build Dawn with the deko3d backend and libuam once (about 7 minutes plus the download on a
+   16-thread PC with 8 jobs). The script downloads Dawn (with its submodules), libuam and two patcher
+   scripts from WiiCompiled-Switch at pinned commits into the folder you give it, applies the patches
+   from this repository and builds both as static libraries:
 
    ```
    source /etc/profile.d/devkitpro.sh
@@ -115,7 +113,7 @@ own risk.
    The first build takes about 20 minutes with 4 jobs (each translated shard needs about 1 GB of
    RAM); the result is `../build-wb-switch/nsmbw.nro`, about 110 MiB.
 
-### Install
+## Install
 
 Copy `../sd-stage/switch/nsmbw/` to `sdmc:/switch/nsmbw/` on the SD card, then add your extracted
 disc as `sdmc:/switch/nsmbw/game/` (with `files/` and `sys/` in it):
@@ -133,7 +131,7 @@ sdmc:/switch/nsmbw/
 Start `nsmbw` from hbmenu. The first start compiles about 1 700 shaders (about 10 minutes, with a
 counter in the top left); later starts reuse the cache.
 
-### Switch controls
+## Controls
 
 > [!NOTE]
 > This button layout and the motion controls are new and have not been checked on the console yet.
@@ -157,7 +155,7 @@ Tilting and shaking the controller works as on a Wii Remote. `NSMBW_SWITCH_MOTIO
 (below) chooses which controllers do that: `on` (default), `nohandheld` (not the console itself) or
 `off`.
 
-### Logs and options
+## Logs and options
 
 - `sdmc:/switch/nsmbw/log.txt` and `stderr.txt` are written on every start; attach them to issues.
 - `sdmc:/switch/nsmbw/env.txt` sets runtime options, one `NAME=value` per line (`#` starts a
@@ -165,7 +163,7 @@ Tilting and shaking the controller works as on a Wii Remote. `NSMBW_SWITCH_MOTIO
 - `sdmc:/switch/nsmbw/gfx_flags.txt` sets `AURORA_GFX_FLAGS` (for example `validate`) for graphics
   debugging. Delete it afterwards: it slows the game down.
 
-### Where the Switch code lives
+## Where the Switch code lives
 
 | Path | What |
 | --- | --- |
@@ -174,338 +172,65 @@ Tilting and shaking the controller works as on a Wii Remote. `NSMBW_SWITCH_MOTIO
 | `aurora-main/cmake/patches/*-nintendo-switch-platform.patch` | Switch support for Dawn (with the deko3d backend), SDL3, Abseil, SQLite and Tracy, taken unchanged from DriftDroid |
 | `projects/nsmbw/tools/patches/` | fixes on top of Dawn and libuam |
 | `projects/nsmbw/tools/build-switch-deps.sh`, `build-switch.sh` | build steps 2 and 3 above |
+| `projects/nsmbw/`, `runtime/`, `aurora-main/`, `translator/` | the recompilation project, runtime, renderer and translator from upstream |
 
-Several runtime parts are ported from [DriftDroid](https://github.com/dorPXP/driftdroid) (Mario Kart
-Wii on Switch, GPL-3.0); the files say which. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
-
----
-
-## What it does
-
-**Runs natively on your phone.**
-The whole game is compiled to ARM64 code ahead of time. It runs at a full 60 fps on a
-Snapdragon 6 Gen 1 phone.
-
-**LAN and Tailscale multiplayer across phones and PCs.**
-On the save file screen, a **Couch / LAN** button sits at the top right (Couch by default). Switch it
-to **LAN** to **Create Room** (choose how many are playing, then start the room when everyone is
-in) or **Join** a room from a list that finds
-games by itself: on your Wi-Fi, and over the internet on your [Tailscale](https://tailscale.com)
-network, phones included. Every device runs the game and only the players' inputs travel, in
-lockstep. If a player drops, the others get a message instead of a frozen game, and the host keeps
-the progress. See [LAN and Tailscale multiplayer](#lan-and-tailscale-multiplayer).
-
-**Tap the menus.**
-Tap (or click with the mouse on Windows) what you want on the game's menus: the title screen,
-Select a File, Select Players, the LAN menus, the world map's Menu / Select World / View Map /
-Items buttons, the pause and **+** menus and the Save / Don't Save style windows. On the world
-map, tap a level (or a Toad house, tower or castle) and the player walks there along the paths; tap
-the one the player stands on to play it. The on-screen controller hides on the main menus and comes
-back for the game.
-
-**Touch controls, tilt and shake.**
-An on-screen sideways Wii Remote (D-pad, 1, 2, A, Shake, + and -) with adjustable opacity and
-vibration. Turn the phone like a steering wheel to tilt, jolt it to shake. Each can be turned off.
-
-**Any aspect ratio, ultrawide included.**
-Original 4:3, 16:9, or Fill, which widens the view to fit your whole screen. On screens wider
-than 16:9 (ultrawide monitors, most phones) the game really draws wider: levels, the world map and
-the menus show more to the sides instead of being stretched, and enemies appear at the real edges
-of your screen.
-
-**Native rendering via aurora.**
-The graphics layer is built on [aurora](https://github.com/encounter/aurora), a source-level
-GameCube & Wii compatibility layer, running on Vulkan (Android) or Direct3D 12 / Vulkan / Direct3D 11 (Windows).
-
-**High internal resolution.**
-Render at more than the console's 480 lines, on phones and on PC, or at exactly your screen's own
-resolution with **Match Screen Resolution**.
-
-**Settings gear.**
-The gear next to the Couch / LAN button on the save file screen opens the game's settings window,
-and so do **Settings** in the world map's **+** menu (under Quick Save) and **Settings** in a
-level's pause window (between Continue and Exit Course).
-**Video:** Match Screen Resolution, the resolution multiplier (greyed out while matching the
-screen; on a wide screen each scale comes as "1x (480p)" with black bars or "1x Ultrawide" filling
-the screen), Show FPS Counter (off by default), Frametime Graph (each frame's time, drawn under
-the FPS counter; off by default; with V-Sync on it shows how many screen refreshes each frame was up
-for), Spinning Coins (animated coins and blocks, on by default) and, on Windows and Android, V-Sync
-(no tearing: the game's clock follows the display's refresh, one frame per refresh at 60 Hz or every
-third at 180 Hz; off by default on Windows, on by default on Android). On Windows and Linux, **Fullscreen**: Off, Borderless
-(a window covering the screen, as F11 toggles) or Exclusive (the game takes over the display); each
-press moves to the next. **Audio:** Master, Music and Sound Effects
-sliders, each with its percentage beside it; drag one (finger or mouse) or move it 5% at a time with
-left and right. **Keybinds:** every keyboard control, each changed by picking it and pressing the new
-key, with Reset Defaults, and **Space Smart Spin QoL** (on by default): on the keyboard, Space pressed
-while Mario is in the air spins him, like shaking the remote, instead of pressing 2 (wall jumps,
-swimming and Yoshi's flutter keep 2; within about a small Mario's height of the ground it is the
-next jump instead). **Language:** English, Español or
-Français, the three languages on the USA disc (Nintendo's own translations); a change applies the
-next time the game starts.
-
-**Leaving the app pauses the game (Android).**
-Switch to another app or go to the home screen and the game stops where it is; come back and it
-carries on from the same frame. Before it pauses, it also writes the game's own Quick Save of your
-progress, so if Android closes the app while you're away, the next start puts you back on the world
-map at the level you were in. Coming back normally deletes that backup again. (With the pause
-window or the world map's menu open, it pauses without the backup: that menu has Quick Save itself.)
-
-**Settings.**
-On Android, **Settings** on the start menu holds Display (aspect ratio, render resolution, FPS
-counter, frametime graph, spinning coins, V-Sync, graphics compatibility) and Controls; in the game, the
-phone's Back gesture offers Start Menu, Leave LAN Game and Quit. On Windows, press **F10** for the settings bar. Everything you
-change is saved and restored next launch.
-
-**Updates (Android).**
-**Check for Updates** under Play on the start menu installs the newest release from this page, with
-your saves, settings and game files kept. **Auto Update** (off by default) does it whenever you open
-the app. The first time, Android asks you to allow installs from NSMBW.
-
-**Skip Start Menu.**
-On Android, the app can open straight into the game; Back > **Start Menu** brings you back.
-
-## Tested devices
-
-| Device | Chipset | GPU | Android | Result |
-| --- | --- | --- | --- | --- |
-| Samsung Galaxy S26 Ultra (SM-S948U) | Qualcomm Snapdragon 8 Elite Gen 5 for Galaxy (SM8850) | Adreno 840 | 16 | 60 fps, LAN play |
-| T-Mobile REVVL 7 5G (TMRV075G) | Qualcomm Snapdragon 6 Gen 1 (SM6450) | Adreno 710 | 14 | 60 fps, LAN play |
-| Google Pixel 3 XL | Qualcomm Snapdragon 845 (SDM845) | Adreno 630 | 12 | 60 fps (thanks to v0.2.2 performance), LAN play |
-| LG V30+ (LS998) | Qualcomm Snapdragon 835 (MSM8998) | Adreno 540 | 8.0 | Not supported: needs Android 9 or newer |
-| Windows 10 PC | AMD Ryzen 5 5600G | NVIDIA GeForce RTX 5070 | - | 60 fps, LAN play with the phones |
-| Windows PC | AMD Ryzen 7 5700X3D | NVIDIA GeForce RTX 5070 Ti | - | 60 fps, LAN play |
-
-Linux has been run on Ubuntu 26.04 and Fedora 44, both under WSL with software rendering so far: it
-boots, plays with sound, and computes the same frames as Windows for LAN play. Reports from real
-Linux PCs and the Steam Deck are welcome.
-
-> [!WARNING]
-> **Untested on Mali GPUs** (most phones with MediaTek, Samsung Exynos or Google Tensor chips).
-> Adreno GPUs needed workarounds for their shader compilers (Display > Graphics Compatibility); Mali
-> may need its own. If you try one, please open an issue with what you see.
-
-## Requirements
-
-- **Android:** an arm64 phone on Android 9 or newer, with Vulkan (OpenGL ES 3.1 where Vulkan can't run
-  the game). About 1 GB free for the app,
-  the game files and the import.
-- **Windows:** Windows 10 or 11, 64-bit, with a Direct3D 12, Vulkan or Direct3D 11 GPU. Processors older than
-  Intel Haswell / AMD Excavator (no AVX2) get the compat build automatically (see Installing).
-- **Linux:** a 64-bit x86 PC with a Vulkan driver and glibc 2.35 or newer: Fedora 36 or newer,
-  Ubuntu 22.04 or newer, Debian 12 or newer, Arch, SteamOS and their relatives. X11 and Wayland both
-  work.
-- Your own **USA `SMNE01` revision 1** copy of New Super Mario Bros. Wii, and Dolphin on a computer
-  to extract it.
-
-Only the USA disc, revision 1 works. Other regions and revisions put the game's code at other
-addresses, so the app and the PC version check the disc and refuse anything else.
-
-> [!NOTE]
-> Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
-> game files won't be provided or tolerated.
-
-## Getting the game files
-
-You do this once, with Dolphin on a computer:
-
-1. In Dolphin, right-click **New Super Mario Bros. Wii** and choose **Properties**.
-2. Check the **Info** tab: the game ID must be `SMNE01` and the revision **1**.
-3. Open the **Filesystem** tab, right-click the disc at the top and choose **Extract Entire Disc**.
-   Pick an empty folder. You get a folder with `files` and `sys` in it.
-
-**Android:** copy that folder (or a zip of it) to your phone. Open the app and tap
-**Import from Extracted Game Data Folder…** or **Import Game Data Zip…** and choose it. The app
-checks the game, copies it in, and you can delete the copy afterwards. Your saves are kept when you
-import again.
-
-**Windows and Linux:** start `NSMBW.exe` (Linux: `./NSMBW`) and choose that folder when it asks. Or
-name the folder `game` and put it next to `NSMBW.exe` (`NSMBW`). Keep the folder: the PC version
-reads it every time.
-
-The app's start screen shows these steps until a game is imported, and **Help** shows them again.
-
-## Installing
-
-Download from the [Releases](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest)
-page:
-
-- **Android:** `NSMBW-0.4.0-android-arm64.apk`. Open it on your phone and allow installing from that
-  app when Android asks. Updates install over it and keep your saves and game files.
-- **Windows:** `NSMBW-0.4.0-windows-x64.zip`. Extract it anywhere and run `NSMBW.exe`. Settings
-  (including where your game files are), saves and caches live in `Documents\MarioWiiSaveData`, so a
-  new version, extracted anywhere, carries on where the last one left off. The first start of 0.0.8 or
-  later takes over the data of an older version extracted in the same folder (or of the version it
-  replaces). On a processor without AVX2 (older than Intel Haswell or AMD Excavator), `NSMBW.exe`
-  starts `compat\NSMBW-compat.exe` by itself: the same game, with its math done the long way, so it
-  still plays LAN games with everyone else. Keep the `compat` folder next to `NSMBW.exe`.
-- **Linux:** `NSMBW-0.4.0-linux-x86_64.tar.gz`. Extract it anywhere and run `./NSMBW`. The first start
-  asks for the extracted game folder (with zenity or kdialog; or put the folder next to `NSMBW`,
-  named `game`). Settings, saves and caches live in `~/.local/share/WiiCompiled`
-  (`$XDG_DATA_HOME/WiiCompiled` if set). Older processors get `compat/NSMBW-compat` automatically, as
-  on Windows. Fedora Workstation, KDE and Ubuntu desktops already have everything else it needs; if the
-  game says it found no Vulkan driver, install it with `sudo dnf install mesa-vulkan-drivers
-  vulkan-loader` (Fedora) or `sudo apt install mesa-vulkan-drivers libvulkan1` (Ubuntu, Debian), or
-  your NVIDIA driver.
-- **Newer Super Mario Bros. Wii:** on Android, open the Newer tab on the start menu, download its support
-  module there, and import your own copy of Newer v1.30 (USA, SMNE03). On PC and Linux it is built from
-  source for now: see [`projects/nsmbw/BUILDING.md`](projects/nsmbw/BUILDING.md).
-- **Another game, such as a mod:** saves are kept per game. Extract a second copy of the release and
-  put that game's extracted folder next to its `NSMBW.exe`, named `game`. That copy plays it with
-  saves of its own, and the first copy keeps playing the original.
-
-> [!CAUTION]
-> Only take builds from this repository's
-> [Releases](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases) page. If someone's
-> sharing an APK or zip anywhere else, don't touch it.
-
-## Controls
-
-**Android:** the on-screen remote, tilt and shake, all adjustable under Settings > Controls on the
-start menu.
-
-**Windows** (a Wii Remote held sideways):
-
-| Key | Wii Remote |
-| --- | --- |
-| Arrow keys | D-pad |
-| X or Space | 2 (jump); Space in the air spins (Space Smart Spin QoL) |
-| Z or Left Shift | 1 (run, fireball) |
-| C or Ctrl | Shake (spin, pick up) |
-| Q / E | Tilt left / right |
-| B | A |
-| Enter or Esc | + (pause, the world map's menu) |
-| Minus or Tab | - |
-| F10 | Settings bar |
-| F11 | Fullscreen on / off |
-
-Every key can be changed in the gear's **Keybinds** tab on the save file screen. A game controller
-also works on Windows as a sideways Wii Remote (remap it under F10 > Controls).
-
-## LAN and Tailscale multiplayer
-
-<p align="center">
-  <img src="docs/screenshots/windows-lan-couch-toggle.png" alt="The Couch / LAN button at the top right of the Select a File screen, on Windows" width="640">
-  <br><sub>The Couch / LAN button on the save file screen (Windows), in the game's own style. Press Up from any file to reach it.</sub>
-</p>
-
-Up to 4 players, on any mix of phones and PCs. Every player needs their own game files.
-
-1. One player presses Up on the save file screen to reach the **Couch** button at the top right,
-   switches it to **LAN**, then picks **Create Room** and how many are playing.
-2. The others switch it to **LAN** too, pick **Join**, and choose the room from the list.
-3. The host starts the room. Every device restarts into the session with the host's save, and the
-   game goes to the player select by itself.
-
-**Same Wi-Fi:** rooms show up by themselves.
-
-**Over the internet, with Tailscale:** install [Tailscale](https://tailscale.com) on every device
-and sign in to the same tailnet (or [share a device](https://tailscale.com/kb/1084/sharing) with
-friends). Tailscale can't broadcast, so the game finds rooms there like this:
-
-- A **PC** asks every device in `tailscale status`, and a PC's room is announced to every Tailscale
-  device, so it shows up on the phones by themselves.
-- Devices **remember** the Tailscale devices they meet (on the same Wi-Fi or over Tailscale) and
-  **pass them on**: once any device has seen another, every game device on the tailnet learns it.
-- To find another **phone** the very first time with no PC around, add its Tailscale name (as shown
-  in the Tailscale app, e.g. `s26-ultra`) or its 100.x address under **Tailscale & LAN Devices**:
-  on the start menu on Android, or **F10 > LAN Play** on Windows. Those
-  screens also show the device's own addresses to tell others. Only one of the two needs to add the
-  other.
-
-Rooms on the same Wi-Fi are always used over the Wi-Fi, even when Tailscale is on. Tailscale play
-was tested between the Windows PC and the REVVL 7 over Tailscale alone, in both directions.
-
-Windows asks to let the game through the firewall the first time you host a room; allow it, or
-others can't find your room. **Couch** is the normal local multiplayer on one device.
-
-## Building from source
-
-Owning the game is still required even if you compile everything yourself.
-
-You'll need: .NET 8 SDK, CMake, Ninja, LLVM/Clang (LLVM-MinGW for Windows, the Android NDK for
-Android) and Python 3. The full steps, from Dolphin's extraction to the APK and the exe, are in
-[`projects/nsmbw/BUILDING.md`](projects/nsmbw/BUILDING.md).
-
-- The NSMBW project: [`projects/nsmbw`](projects/nsmbw) (translator config, function map, tools).
-- The runtime, retargeted from Mario Kart Wii to NSMBW: [`runtime`](runtime).
-- The Android app: [`android`](android).
-- The Nintendo Switch build (this fork): [Nintendo Switch](#nintendo-switch).
-- WiiCompiled's own README, for the translator and the runtime it comes from:
-  [`docs/WiiCompiled-README.md`](docs/WiiCompiled-README.md).
-
-## What the downloads contain
-
-The release downloads include the game's code, translated from the disc's PowerPC executable to
-native ARM64 and x86-64 code, but no game files: no disc image, no levels, music, graphics or
-sounds, and no console keys. You supply those from your own disc. This is the same model KartPad
-uses for Mario Kart Wii. WiiCompiled itself does not ship translated code: its setup translates the
-game on your own machine.
-
-The source code in this repository is free software under the GPLv3 (see [License](#license)).
-That license covers this project's code only; it gives no rights to Nintendo's game, its code or
-its assets.
+The Android app (`android/`) and the Windows/Linux launcher (`Launcher/`) are upstream's and are not
+part of the Switch build.
 
 ## FAQ
 
 **Is this an emulator?**
-No. Everything is compiled to native code before you ever press play. At runtime there's nothing
-emulating a Wii CPU or GPU.
+No. Everything is compiled to native code before you start it. At runtime nothing emulates a Wii CPU
+or GPU.
 
 **Is it a decompilation?**
-Not in the hand-written sense: it's a static recompilation. WiiCompiled's translator turns the
-game's PowerPC code into C++ automatically, and that is compiled for your phone or PC. The runtime
-around it (graphics, audio, input, the Wii's system software) is source code.
+No, a static recompilation. WiiCompiled's translator turns the game's PowerPC code into C++
+automatically, and that is compiled for the Switch. The runtime around it (graphics, audio, input,
+the Wii's system software) is source code.
 
-**Do you provide the game?**
-No. Don't ask.
+**Do you provide the game or an `.nro`?**
+No.
 
-**Which game version works?**
-USA `SMNE01`, revision 1. Other regions and revisions are **rejected**: their code sits at other
-addresses, and this port's runtime hooks the game at exact addresses.
+**Which consoles does it run on?**
+It is a homebrew program for a Switch 1 with Atmosphère, built and measured on one Erista console so
+far. It does not run without custom firmware.
 
 **Will you fix original bugs?**
 No, behaving like the real game is the goal. Only report things where this port differs from the
 original game on a Wii or in Dolphin.
 
 **The game crashed or shows something wrong.**
-Open an issue with your device, what you did, and the log from `Documents\MarioWiiSaveData\Logs`
-(Windows) or `~/.local/share/WiiCompiled/Logs` (Linux).
-
-**Is it done?**
-No, this is 0.4.0. It boots and plays on the tested devices, but not every level has been checked,
-and rendering, performance and LAN play are still being worked on.
+Open an issue with your Switch model, docked or handheld, the clocks you set, what you did, and
+`log.txt` and `stderr.txt` from `sdmc:/switch/nsmbw/`.
 
 ## AI usage
 
-This port was entirely coded by Claude Opus 5.5, Anthropic's AI model, directed and tested by
-WitherBlitz on the devices above. That includes moving WiiCompiled's runtime from Mario Kart Wii to
-New Super Mario Bros. Wii, the Android app, and LAN play.
+Like the upstream port, the Switch port was coded with Anthropic's Claude models, directed and tested
+on the console by Philipp Schuler.
 
 ## Credits
 
+- **[WitherBlitz](https://github.com/WitherBlitz)** - the
+  [NSMB Wii Multiplayer Recompilation](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation)
+  this fork is built on: WiiCompiled's runtime moved to NSMBW, with its hooks and fixes.
 - **[WiiCompiled](https://github.com/patchzyy/Wiicompiled)** by patchzyy and contributors - the
-  static recompiler and runtime this port is built on.
-- **[Jude (@YlPorts)](https://github.com/YlPorts)** - the Android draw-count and Mali GPU changes.
-- **[KartPad](https://github.com/chrissotraidis/kartpad)** - WiiCompiled on Android, whose approach
-  and game-file import steps this port follows.
-- **[aurora](https://github.com/encounter/aurora)** - the GX rendering/windowing backend. MIT
-  licensed.
-- **[Dawn](https://dawn.googlesource.com/dawn)** - Google's WebGPU implementation, powering aurora's
-  Vulkan and Direct3D backends.
+  static recompiler and runtime underneath.
+- **[DriftDroid](https://github.com/dorPXP/driftdroid)** by dorPXP - Mario Kart Wii on Switch; the
+  Switch platform patches for Dawn (with the deko3d backend), SDL3, Abseil, SQLite and Tracy and parts
+  of the Switch runtime come from it (GPL-3.0).
+- **[WiiCompiled-Switch](https://github.com/yashin-sh/WiiCompiled-Switch)** by yashin-sh - the
+  recipe and patcher scripts for building Dawn for the Switch, fetched at build time (GPL-3.0).
+- **[aurora](https://github.com/encounter/aurora)** - the GX rendering backend. MIT licensed.
+- **[Dawn](https://dawn.googlesource.com/dawn)** - Google's WebGPU implementation, here with a
+  deko3d backend.
+- **[devkitPro](https://devkitpro.org/)** - devkitA64, libnx, deko3d and the Switch tools;
+  **[libuam](https://github.com/averne/libuam)** - the shader compiler for deko3d.
 - **[Dolphin Emulator](https://github.com/dolphin-emu/dolphin)** - the reference for Wii hardware
   behavior, the free DSP coefficient ROM and the default WiiConnect24 tree bundled with the runtime,
   and the tool you extract your game with.
 - **The NSMBW reverse-engineering community** - RootCubed's
   [NSMBW symbols](https://github.com/RootCubed/nsmbw-symbols), the NSMBW decompilation and the
   NSMBW address maps, which the function map is built from.
-- **[DriftDroid](https://github.com/dorPXP/driftdroid)** by dorPXP - Mario Kart Wii on Switch; the
-  Switch platform patches for Dawn (with the deko3d backend), SDL3, Abseil, SQLite and Tracy and parts
-  of the Switch runtime come from it (GPL-3.0).
-- **[WiiCompiled-Switch](https://github.com/yashin-sh/WiiCompiled-Switch)** by yashin-sh - the
-  recipe and patcher scripts for building Dawn for the Switch, fetched at build time (GPL-3.0).
-- **[devkitPro](https://devkitpro.org/)** - devkitA64, libnx, deko3d and the Switch tools;
-  **[libuam](https://github.com/averne/libuam)** - the shader compiler for deko3d.
-- Everyone in the static recompilation community.
 
 Bundled third-party components and their licenses live in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
@@ -519,11 +244,14 @@ section 5 of the GPLv3. The full list is `git diff 2ff64f5`; in short:
   Switch patches under `aurora-main/cmake/patches/` and `projects/nsmbw/tools/patches/`, and the build
   scripts `build-switch-deps.sh` and `build-switch.sh`.
 - Speed-ups for the Switch's CPU and GPU: a flat guest memory path, a separate GX thread, faster FIFO
-  and pipeline handling, a native reverb, a high-level path for water effects, and Switch defaults for
-  these.
+  and pipeline handling, a native reverb, a high-level path for water effects, particle shortcuts, and
+  Switch defaults for these.
+- Switch controls: button layout, Joy-Con and Pro Controller motion as Wii Remote tilt and shake, and
+  a launch option for texture replacements.
 - Measurement and diagnostics: a frame/game-speed monitor, a guest profiler and a development link
   for test runs (the link stays off unless `sdmc:/switch/nsmbw/devhost.txt` exists).
 - Changes to disc reading (read cache), Wii Remote input and the runtime build files for the Switch.
+- This README, rewritten for the Switch; upstream's covers Android, Windows and Linux.
 
 ## License
 
@@ -535,7 +263,6 @@ It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; 
 implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public
 License for more details.
 
-Not affiliated with, endorsed by, or associated with Nintendo. New Super Mario Bros. Wii is a
-trademark of Nintendo.
-
-**I plan to fully decompile this game in the near future, but for now with the time I have at the moment, this'll have to do. At first, this project was to just see the limits of what I can do with Opus, but now I'd like to see it to the end haha. I'll use this as a base for some of the features and copy them over once I decompile the game. Sorry for the misleading repo name! I changed my mind midway through the creation of this project.**
+The license covers this project's code only; it gives no rights to Nintendo's game, its code or its
+assets. Not affiliated with, endorsed by, or associated with Nintendo. New Super Mario Bros. Wii and
+Nintendo Switch are trademarks of Nintendo.
