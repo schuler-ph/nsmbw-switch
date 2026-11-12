@@ -265,14 +265,20 @@ bool async_copies() {
   // On with the GX thread on 4+ hardware threads, where it has a core of its own. Below that the
   // game thread decodes the tail itself whenever the GX thread is idle (sync_if_threaded), and a
   // two-core CPU's frame worker is the critical path, so copies stay as they were there.
-  // NSMBW_ASYNC_COPY=0 or 1 forces it (still only with the GX thread). Counted with usable_cores():
-  // off on the Switch's 3 cores unless forced.
+  // NSMBW_ASYNC_COPY=0 or 1 forces it (still only with the GX thread).
   static const bool wanted = [] {
     const char* value = std::getenv("NSMBW_ASYNC_COPY");
     if (value != nullptr && value[0] != '\0') {
       return value[0] == '1';
     }
+#if defined(__SWITCH__)
+    // Switch: on with its 3 cores, as the game thread there doesn't decode the tail itself
+    // (NSMBW_GX_INLINE_SYNC stays off). Measured 2026-11-12 (4-1, two players, docked,
+    // 1785/768/1600 MHz): game thread 12.2-12.4 -> 11.6-11.7 ms per frame, GX thread unchanged.
+    return true;
+#else
     return usable_cores() >= 4;
+#endif
   }();
   return wanted && threaded();
 }
