@@ -1,5 +1,5 @@
 name: Crash / freeze report
-description: The game crashed, froze, or closed on its own.
+description: The game crashed, froze, or closed on its own on the Switch.
 title: "[Crash] "
 labels: ["crash"]
 body:
@@ -8,39 +8,63 @@ body:
       value: |
         Thanks for the report! Crashes are almost impossible to fix without logs, so please fill this in fully.
 
-        **Where to find your logs:**
-        - **Windows:** `Documents\MarioWiiSaveData\Logs` (paste `%USERPROFILE%\Documents\MarioWiiSaveData\Logs` into the File Explorer address bar)
-        - **Linux:** `~/.local/share/WiiCompiled/Logs`
-        - **Android:** connect the phone to a computer with a USB cable and open `Android/data/com.wither.nsmbw/files/Logs`
-
-        Every run gets its own folder. Open the **newest** one and attach (drag & drop) `console.log` and any `crash_*.txt` file from it.
+        **Where to find the logs** (on the SD card, e.g. over MTP with DBI or in a card reader):
+        - `sdmc:/switch/nsmbw/log.txt` and `sdmc:/switch/nsmbw/stderr.txt` (written on every start, so copy them right after the crash, before starting the game again)
+        - if Atmosphère showed a crash screen: the newest file in `sdmc:/atmosphere/crash_reports/`
   - type: checkboxes
     id: preflight
     attributes:
       label: Before you continue
       options:
-        - label: I'm on the latest release.
+        - label: I built the current `main` of this repository.
           required: true
         - label: I searched the existing issues and nobody has reported this crash yet.
           required: true
         - label: My game is New Super Mario Bros. Wii, USA (SMNE01), revision 1.
           required: true
-  - type: dropdown
-    id: platform
+  - type: input
+    id: commit
     attributes:
-      label: Platform
+      label: Commit
+      description: "`git rev-parse --short HEAD` in your clone."
+      placeholder: "e.g. aff6578"
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Switch model
       options:
-        - Android
-        - Windows
-        - Linux
+        - Switch 1 (original, Erista)
+        - Switch 1 (V2, Mariko)
+        - Switch Lite
+        - Switch OLED
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Docked or handheld
+      options:
+        - Docked
+        - Handheld
+    validations:
+      required: true
+  - type: dropdown
+    id: clock
+    attributes:
+      label: CPU clock
+      options:
+        - Stock (no sys-clk profile)
+        - 1785 MHz via sys-clk
+        - Other (say which below)
     validations:
       required: true
   - type: input
-    id: version
+    id: firmware
     attributes:
-      label: Version
-      description: The release you downloaded (it's in the file name).
-      placeholder: "e.g. 0.1.2"
+      label: Firmware and Atmosphère version
+      placeholder: "e.g. 21.2.0 / Atmosphère 1.10.2"
     validations:
       required: true
   - type: dropdown
@@ -48,12 +72,11 @@ body:
     attributes:
       label: When does it crash?
       options:
-        - During startup, before the title screen
+        - During startup or shader compilation, before the title screen
         - On the title screen or the file select
         - On the world map
         - While loading a level
         - During a level
-        - In a LAN game
         - Randomly / no clear pattern
     validations:
       required: true
@@ -72,38 +95,15 @@ body:
     id: doing
     attributes:
       label: What were you doing when it crashed?
-      description: Which world and level, how many players, which power-up, anything you pressed right before. The more specific, the better.
-      placeholder: "e.g. World 3-4 with two players, it froze when Luigi picked up a propeller mushroom…"
+      description: Which world and level, how many players and which controllers, which power-up, anything you pressed right before.
+      placeholder: "e.g. World 3-4 with two players on sideways Joy-Cons, it froze when Luigi picked up a propeller mushroom…"
     validations:
       required: true
-  - type: textarea
-    id: steps
-    attributes:
-      label: Steps to reproduce
-      description: If you can make it crash on purpose, list the steps.
-      placeholder: |
-        1. Start the game
-        2. …
   - type: textarea
     id: logs
     attributes:
       label: Logs
-      description: Drag & drop `console.log` and any `crash_*.txt` from your newest run folder here, or paste the end of them below.
+      description: Drag & drop `log.txt`, `stderr.txt` and any Atmosphère crash report here, or paste the end of them below.
       render: text
-    validations:
-      required: true
-  - type: input
-    id: device
-    attributes:
-      label: Device
-      description: Phone model, or the PC's CPU and GPU (with the driver version).
-      placeholder: "e.g. Pixel 7 / Ryzen 5 5600 + RTX 3060, driver 560.94"
-    validations:
-      required: true
-  - type: input
-    id: os
-    attributes:
-      label: OS version
-      placeholder: "e.g. Android 14 / Windows 11 24H2 / Fedora 44"
     validations:
       required: true

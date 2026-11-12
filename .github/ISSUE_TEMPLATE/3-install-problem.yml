@@ -1,74 +1,65 @@
-name: Setup problem
-description: Installing, importing the game files, or starting the game for the first time doesn't work.
+name: Build or setup problem
+description: Building the .nro, setting up the SD card, or starting the game for the first time doesn't work.
 title: "[Setup] "
 labels: ["setup"]
 body:
   - type: markdown
     attributes:
       value: |
-        Please check [Getting the game files](https://github.com/schuler-ph/nsmbw-switch#getting-the-game-files) first: most setup problems are a different region or revision of the game, or a disc image instead of the extracted folder.
+        Please check the README first: [Getting the game files](https://github.com/schuler-ph/nsmbw-switch#getting-the-game-files), [Build](https://github.com/schuler-ph/nsmbw-switch#build) and [Install](https://github.com/schuler-ph/nsmbw-switch#install). Most problems are a different region or revision of the game, a disc image instead of the extracted folder, or starting hbmenu from the album instead of through a title override.
 
-        If the game starts but stops early, attach `console.log` from the newest folder in:
-        - **Windows:** `Documents\MarioWiiSaveData\Logs`
-        - **Linux:** `~/.local/share/WiiCompiled/Logs`
-        - **Android:** `Android/data/com.wither.nsmbw/files/Logs` (connect the phone to a computer with a USB cable)
+        If the game starts but stops early, attach `sdmc:/switch/nsmbw/log.txt` and `stderr.txt`.
   - type: checkboxes
     id: preflight
     attributes:
       label: Before you continue
       options:
-        - label: I'm on the latest release.
+        - label: I am on the current `main` of this repository.
           required: true
         - label: I searched the existing issues and nobody has reported this yet.
           required: true
         - label: My game is New Super Mario Bros. Wii, USA (SMNE01), revision 1, extracted with Dolphin's Extract Entire Disc.
           required: true
   - type: dropdown
-    id: platform
-    attributes:
-      label: Platform
-      options:
-        - Android
-        - Windows
-        - Linux
-    validations:
-      required: true
-  - type: dropdown
     id: stage
     attributes:
       label: Where does it go wrong?
       options:
-        - Installing the app / extracting the download
-        - Importing or choosing the game files
-        - The game won't start after that
-        - After updating from an older version
+        - Translating the game (unpack_game.py, prelink_rels.py, build-linux.sh)
+        - Building Dawn and libuam (build-switch-deps.sh)
+        - Building the .nro (build-switch.sh)
+        - Copying to the SD card
+        - Starting from hbmenu
         - Other
+    validations:
+      required: true
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: "`git rev-parse --short HEAD` in your clone."
+      placeholder: "e.g. aff6578"
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: Build machine
+      description: Linux distribution or WSL2, devkitPro version (or Docker image tag).
+      placeholder: "e.g. WSL2 Ubuntu 24.04, devkitpro/devkita64:20260219"
     validations:
       required: true
   - type: textarea
     id: what
     attributes:
       label: What happens?
-      description: The exact error message (copy the full text or screenshot it) and what you were doing when it appeared.
+      description: The exact error message (copy the last lines of the build output or screenshot the Switch) and what you were doing when it appeared.
+      render: text
     validations:
       required: true
   - type: textarea
     id: logs
     attributes:
       label: Logs
-      description: Attach `console.log` from the newest run folder if there is one.
+      description: Attach `log.txt` and `stderr.txt` from `sdmc:/switch/nsmbw/` if the game got that far.
       render: text
-  - type: input
-    id: device
-    attributes:
-      label: Device
-      placeholder: "e.g. Galaxy S23 / Ryzen 5 5600 + RTX 3060"
-    validations:
-      required: true
-  - type: input
-    id: os
-    attributes:
-      label: OS version
-      placeholder: "e.g. Android 14 / Windows 11 24H2 / Fedora 44"
-    validations:
-      required: true
