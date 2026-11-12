@@ -1416,11 +1416,20 @@ void DrawStartupScreen() {
     if (ImGui::Begin("Wiicompiled Startup", nullptr, kFlags)) {
         // The credits, in the game's own fonts when the game folder is readable (it always is once
         // the game can start), else in the overlay's font.
+#if defined(__SWITCH__)
+        // The Switch port's own credits (schuler-ph/nsmbw-switch); other platforms keep upstream's.
+        constexpr const char* kTitle = "NSMBW for Nintendo Switch";
+        constexpr const char* kCredit =
+            "Switch port by Philipp Schuler, built on WitherBlitz's NSMBW recompilation and WiiCompiled.";
+        // At the bottom of the screen.
+        constexpr const char* kReport = "Report bugs at github.com/schuler-ph/nsmbw-switch";
+#else
         constexpr const char* kTitle = "Made by WitherBlitz";
         constexpr const char* kCredit =
             "Code from WiiCompiled used and modified by an LLM to make this port possible.";
         // At the bottom of the screen.
         constexpr const char* kReport = "Report any bugs you find to my github page!";
+#endif
         static const std::shared_ptr<GameLayout::Font> titleFont = GameLayout::LoadFont("mj2d01_marioFont_64_IA4.brfnt");
         static const std::shared_ptr<GameLayout::Font> bodyFont = GameLayout::LoadFont("mj2d00_MessageFont_32_I4.brfnt");
         float startY = 0.0f;
