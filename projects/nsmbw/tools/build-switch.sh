@@ -60,7 +60,9 @@ cmake -S "$repo/runtime" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" \
     -DMKW_TRANSLATED_COMPILE_JOBS=4 -DNSMBW_GAME_ID=SMNE01 \
     -DAURORA_SWITCH_DAWN_SOURCE_DIR="$dawn_src" -DAURORA_SWITCH_DAWN_BUILD_DIR="$dawn_build" \
-    -DAURORA_SWITCH_UAM_LIB="$uam" "${cmake_args[@]}"
+    -DAURORA_SWITCH_UAM_LIB="$uam" -DSDL_PTHREADS=ON "${cmake_args[@]}"
+# SDL_PTHREADS=ON up front: the SDL patch only forces it after SDL has chosen its semaphores, so a
+# first configure would get SDL's generic semaphores and only a second one the pthread ones.
 cmake --build "$build" --target nsmbw_nro --parallel "$jobs"
 echo "Done: $build/nsmbw.nro (symbols: $build/WiiCompiled.elf)"
 

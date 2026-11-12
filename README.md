@@ -80,7 +80,7 @@ own risk.
   starting a game), not from the album: the game needs the memory of a full application.
 - [sys-clk](https://github.com/retronx-team/sys-clk) with a CPU profile of 1785 MHz for this
   program while docked, for full speed.
-- A Linux machine or WSL2 (tested: Ubuntu 24.04) with about 30 GB free and 16 GB of RAM.
+- A Linux machine or WSL2 (tested: Ubuntu 24.04) with about 20 GB free besides your extracted disc, and 16 GB of RAM.
 - devkitPro with devkitA64, libnx, deko3d, switch-mesa and switch-tools. Tested versions: the
   `devkitpro/devkita64:20260219` Docker image (devkitA64 r29.2, libnx 4.12.0, deko3d 0.5.0,
   switch-tools 1.13.1).
@@ -94,7 +94,7 @@ own risk.
    `build-linux.sh` runs steps 2 and 3 and fills `generated/`; the Switch build uses the same
    translated code.
 
-2. Build Dawn with the deko3d backend and libuam once (about 35 minutes with 12 jobs). The script
+2. Build Dawn with the deko3d backend and libuam once (about 7 minutes plus the download on a 16-thread PC with 8 jobs). The script
    downloads Dawn (with its submodules), libuam and two patcher scripts from WiiCompiled-Switch at
    pinned commits into the folder you give it, applies the patches from this repository and builds
    both as static libraries:
@@ -112,7 +112,7 @@ own risk.
      --uam $D/uam/build-switch/libuam.a --stage ../sd-stage
    ```
 
-   The first build takes about 15 minutes with 4 jobs (each translated shard needs about 1 GB of
+   The first build takes about 20 minutes with 4 jobs (each translated shard needs about 1 GB of
    RAM); the result is `../build-wb-switch/nsmbw.nro`, about 110 MiB.
 
 ### Install

@@ -8,7 +8,7 @@
 # WiiCompiled-Switch's two patcher scripts are fetched at a pinned commit and checked by SHA-256.
 #
 # Needs: devkitPro (devkitA64, libnx, deko3d, switch-mesa, switch-tools), git, CMake, Ninja, Python 3
-# with mako, meson, bison and flex. Takes about 35 minutes with 12 jobs and about 6 GB of disk.
+# with mako, meson, bison and flex. About 7 minutes plus the download with 8 jobs on a 16-thread PC, and about 5 GB of disk.
 #
 # Usage: build-switch-deps.sh [PREFIX]   (default: ../switch-deps next to the repository)
 # Then:  build-switch.sh --dawn-src PREFIX/dawn --dawn-build PREFIX/dawn-build-switch \

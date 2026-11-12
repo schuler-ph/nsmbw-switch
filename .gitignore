@@ -48,6 +48,9 @@ CMakeFiles/
 cmake-build-*/
 
 
+# Python
+__pycache__/
+
 # .NET
 /translator/TestResults/
 **/TestResults/
