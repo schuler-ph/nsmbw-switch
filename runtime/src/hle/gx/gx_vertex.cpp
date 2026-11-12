@@ -12,6 +12,9 @@
 #include <cstdlib>
 #include <cstring>
 
+extern uint64_t g_gxBeginCount;
+extern uint64_t g_gxBeginRawCount;
+
 namespace {
 uint32_t CanonicalVtxAttr(uint32_t attr) {
     return attr == GX_VA_NBT ? GX_VA_NRM : attr;
@@ -301,6 +304,16 @@ void ServiceDeferredTimingDuringGxWork() {
 }
 }
 
+static bool BeginSkip() {
+    static const bool on = [] {
+        const char* v = std::getenv("NSMBW_BEGINSKIP");
+        const bool enabled = v == nullptr || v[0] != '0';
+        std::fprintf(stderr, "[gx] NSMBW_BEGINSKIP=%d\n", enabled ? 1 : 0);
+        return enabled;
+    }();
+    return on;
+}
+
 extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {
     if(IsDisplayListActive()){
         WriteDisplayListData((u8)(t|vf), 1);
@@ -322,7 +335,16 @@ extern "C" void GX__Begin_8016f0f0(uint32_t t, uint32_t vf, uint32_t nv) {
     g_hleGxState.fifoByteCount=0; g_hleGxState.ResetVertex();
     const bool raw =
         HleTryBeginRaw(static_cast<GXPrimitive>(t), static_cast<GXVtxFmt>(vf), static_cast<uint16_t>(nv));
-    if (fast && !raw) {
+    ++g_gxBeginCount;
+    g_gxBeginRawCount += raw ? 1u : 0u;
+    // NSMBW_BEGINSKIP (default on with GXFAST, =0 off): a per-attribute GXBegin publishes again on
+    // its first vertex write (gx_fifo.cpp, ApplyAuroraVtxStateForRawBegin, before aurora's GXBegin),
+    // and that publish sets every descriptor and every format row this one sets. Publishing here as
+    // well changed nothing aurora draws with, but the two publishes leave different shadows (only
+    // the second sets GX_VA_NBT, whose VAT fall-through rewrites the NRM bits of vatA), so each
+    // defeated the other's skip: every particle quad (nw4r::ef billboards, per-attribute because
+    // of an indexed attribute) paid for two full publishes.
+    if (fast && !raw && !BeginSkip()) {
         ApplyAuroraVtxStateForBegin(static_cast<GXVtxFmt>(vf));
     }
 }

@@ -3,12 +3,17 @@
 #include "gx_cp_decode.h"
 #include "isa/big_endian.h"
 
+#include <algorithm>
+
 // Opcode constants and the stream helpers this file shares with gx_dl.cpp /
 // gx_vertex.cpp; see gx_stream_common.h.
 using namespace GxCmd;
 using namespace GxStream;
 
 HleGxState g_hleGxState;
+namespace GxStream { uint64_t g_gxVtxPublishCount = 0; }
+uint64_t g_gxBeginCount = 0;
+uint64_t g_gxBeginRawCount = 0;
 
 namespace aurora::gx::fifo {
 bool submit_raw_draw(GXPrimitive prim, GXVtxFmt fmt, const uint8_t* vertices, uint16_t vtxCount,
@@ -187,6 +192,139 @@ static bool TryGetRawDirectFifoVertexSize(GXVtxFmt fmt, uint32_t& vertexSize) {
     return entry.ok;
 }
 
+// NSMBW_RAWINDEX (default on with GXFAST, =0 off): a GXBegin whose format is direct except for
+// indexed positions, texture coordinates or RGB8/RGBA8 colours also goes the raw way. Its bytes are
+// gathered as the guest writes them (indices included) and, once complete, each index is replaced
+// by the array element it points at. That is exactly what the per-attribute path hands aurora
+// (SubmitIndexedAttribute: GXPosition/GXTexCoord/GXColor of the element's raw components, which
+// aurora encodes back into the same bytes), and aurora's descriptor already says GX_DIRECT for
+// them (PublishAuroraVtxState). nw4r::ef billboards (snowfall on world map 3: direct F32 position,
+// GX_INDEX8 U8 texture coordinate into a four-corner table) are the bulk of such draws.
+static bool RawIndexOn() {
+    static const bool on = [] {
+        const char* v = std::getenv("NSMBW_RAWINDEX");
+        const bool enabled = v == nullptr || v[0] != '0';
+        std::fprintf(stderr, "[gx] NSMBW_RAWINDEX=%d\n", enabled ? 1 : 0);
+        return enabled;
+    }();
+    return on;
+}
+
+struct RawIndexLayout {
+    struct Step {
+        uint8_t attr;
+        uint8_t inBytes;   // in the guest's stream: the element itself, or a 1/2-byte index
+        uint8_t outBytes;  // in aurora's direct stream
+        uint8_t index;     // 0 direct, 1 GX_INDEX8, 2 GX_INDEX16
+    };
+    bool valid = false;
+    bool ok = false;
+    uint32_t generation = 0;
+    uint32_t inSize = 0;
+    uint32_t outSize = 0;
+    uint32_t steps = 0;
+    Step step[26]{};
+};
+
+static bool RawIndexAttrAllowed(int attr, const VtxAttrFmt& fmt) {
+    if (attr == GX_VA_POS || (attr >= GX_VA_TEX0 && attr <= GX_VA_TEX7)) {
+        return true;
+    }
+    if (attr == GX_VA_CLR0 || attr == GX_VA_CLR1) {
+        return fmt.type == GX_RGB8 || fmt.type == GX_RGBA8;
+    }
+    return false;
+}
+
+static bool ComputeRawIndexLayout(GXVtxFmt fmt, RawIndexLayout& layout) {
+    layout.inSize = 0;
+    layout.outSize = 0;
+    layout.steps = 0;
+    bool anyIndexed = false;
+    for (int attr = 0; attr < 26; ++attr) {
+        const GXAttrType type = g_hleGxState.vtxDesc[attr];
+        if (type == GX_NONE) {
+            continue;
+        }
+        const VtxAttrFmt& f = g_hleGxState.vtxAttrFmt[fmt][attr];
+        const uint32_t direct = GetDirectAttrByteSizeForFifo(static_cast<GXAttr>(attr), f);
+        if (direct == 0 || direct > 0xFFu) {
+            return false;
+        }
+        RawIndexLayout::Step& s = layout.step[layout.steps++];
+        s.attr = static_cast<uint8_t>(attr);
+        s.outBytes = static_cast<uint8_t>(direct);
+        if (type == GX_DIRECT) {
+            s.inBytes = s.outBytes;
+            s.index = 0;
+        } else if ((type == GX_INDEX8 || type == GX_INDEX16) && RawIndexAttrAllowed(attr, f)) {
+            s.inBytes = type == GX_INDEX8 ? 1 : 2;
+            s.index = type == GX_INDEX8 ? 1 : 2;
+            anyIndexed = true;
+        } else {
+            return false;
+        }
+        layout.inSize += s.inBytes;
+        layout.outSize += s.outBytes;
+    }
+    return anyIndexed && layout.outSize != 0;
+}
+
+static const RawIndexLayout* TryGetRawIndexLayout(GXVtxFmt fmt) {
+    if (fmt >= GX_MAX_VTXFMT) {
+        return nullptr;
+    }
+    static RawIndexLayout cache[GX_MAX_VTXFMT];
+    RawIndexLayout& layout = cache[fmt];
+    if (!layout.valid || layout.generation != g_hleGxState.vtxStateGeneration) {
+        layout.ok = ComputeRawIndexLayout(fmt, layout);
+        layout.generation = g_hleGxState.vtxStateGeneration;
+        layout.valid = true;
+    }
+    return layout.ok ? &layout : nullptr;
+}
+
+// The open raw GXBegin gathers indices (HleTryBeginRaw); RawBeginFinish expands them.
+static const RawIndexLayout* s_rawIndexLayout = nullptr;
+static std::vector<uint8_t> s_rawIndexExpanded;
+
+// Replaces every index of the gathered packet by its array element; false (nothing drawn) when an
+// array is unset or an element lies outside guest memory, so the caller takes the per-attribute
+// path for exactly what it would have done there.
+static bool ExpandRawIndexedPacket(const RawIndexLayout& layout, const uint8_t* in, uint16_t verts,
+                                   std::vector<uint8_t>& out) {
+    out.resize(3u + static_cast<size_t>(verts) * layout.outSize);
+    std::memcpy(out.data(), in, 3);
+    uint8_t* o = out.data() + 3;
+    const uint8_t* p = in + 3;
+    for (uint32_t v = 0; v < verts; ++v) {
+        for (uint32_t i = 0; i < layout.steps; ++i) {
+            const RawIndexLayout::Step& s = layout.step[i];
+            if (s.index == 0) {
+                std::memcpy(o, p, s.inBytes);
+            } else {
+                const uint32_t index = s.index == 1 ? p[0] : ReadBE16(p);
+                const auto& arr = g_hleGxState.vtxArray[s.attr];
+                if (arr.base == 0 || arr.stride == 0) {
+                    return false;
+                }
+                const uint32_t addr = arr.base + index * arr.stride;
+                if (!Memory::Contains(addr, s.outBytes)) {
+                    return false;
+                }
+                const auto* src = static_cast<const uint8_t*>(GuestToHostPtr(addr, s.outBytes));
+                if (src == nullptr) {
+                    return false;
+                }
+                std::memcpy(o, src, s.outBytes);
+            }
+            p += s.inBytes;
+            o += s.outBytes;
+        }
+    }
+    return true;
+}
+
 static bool TrySubmitRawDirectFifoDraw(const uint8_t* packet, uint32_t packetBytes, GXPrimitive prim,
                                        GXVtxFmt vtxFmt, uint16_t vtxCount) {
     if (packet == nullptr || packetBytes == 0 || vtxCount == 0) {
@@ -223,7 +361,30 @@ static void HleFifoWriteBurstChunked(const uint8_t* data, uint32_t sizeBytes);
 bool HleTryBeginRaw(GXPrimitive prim, GXVtxFmt fmt, uint16_t verts) {
     static const bool off = std::getenv("NSMBW_NO_RAW_BEGIN") != nullptr;
     uint32_t vertexSize = 0;
-    if (off || verts == 0 || !TryGetRawDirectFifoVertexSize(fmt, vertexSize)) {
+    s_rawIndexLayout = nullptr;
+    if (!off && verts != 0 && GxFast() && RawIndexOn() && !TryGetRawDirectFifoVertexSize(fmt, vertexSize)) {
+        s_rawIndexLayout = TryGetRawIndexLayout(fmt);
+        if (s_rawIndexLayout != nullptr) {
+            vertexSize = s_rawIndexLayout->inSize;
+        }
+    }
+    if (off || verts == 0 || (s_rawIndexLayout == nullptr && !TryGetRawDirectFifoVertexSize(fmt, vertexSize))) {
+        if (RawPublishLogOn() && !off && verts != 0) {
+            // NSMBW_GXFAST_LOG: the first descriptors that kept a GXBegin off the raw path.
+            static std::vector<uint64_t> seen;
+            uint64_t key = fmt;
+            for (int a = 0; a < 21; ++a) key = key * 3u + (g_hleGxState.vtxDesc[a] == GX_NONE ? 0u : g_hleGxState.vtxDesc[a] == GX_DIRECT ? 1u : 2u);
+            if (seen.size() < 16 && std::find(seen.begin(), seen.end(), key) == seen.end()) {
+                seen.push_back(key);
+                std::fprintf(stderr, "[gxfast] per-attribute GXBegin fmt %d prim 0x%02X verts %u, desc:", fmt, prim, verts);
+                for (int a = 0; a < 26; ++a) {
+                    if (g_hleGxState.vtxDesc[a] == GX_NONE) continue;
+                    const auto& f = g_hleGxState.vtxAttrFmt[fmt][a];
+                    std::fprintf(stderr, " %d=%d(cnt %d type %d frac %d)", a, g_hleGxState.vtxDesc[a], f.cnt, f.type, f.frac);
+                }
+                std::fprintf(stderr, "\n");
+            }
+        }
         return false;
     }
     auto& s = g_hleGxState;
@@ -241,6 +402,7 @@ bool HleTryBeginRaw(GXPrimitive prim, GXVtxFmt fmt, uint16_t verts) {
 
 void HleEndRaw() {
     g_hleGxState.rawBegin = false;
+    s_rawIndexLayout = nullptr;
 }
 
 static void RawBeginFinish() {
@@ -249,7 +411,15 @@ static void RawBeginFinish() {
     const GXPrimitive prim = s.currentPrim;
     const GXVtxFmt fmt = s.currentVtxFmt;
     const auto verts = static_cast<uint16_t>(s.vertsRemaining);
-    if (TrySubmitRawDirectFifoDraw(s.rawPacket.data(), s.rawExpected, prim, fmt, verts)) {
+    const RawIndexLayout* indexed = s_rawIndexLayout;
+    s_rawIndexLayout = nullptr;
+    if (indexed != nullptr) {
+        if (ExpandRawIndexedPacket(*indexed, s.rawPacket.data(), verts, s_rawIndexExpanded) &&
+            TrySubmitRawDirectFifoDraw(s_rawIndexExpanded.data(), static_cast<uint32_t>(s_rawIndexExpanded.size()),
+                                       prim, fmt, verts)) {
+            return;
+        }
+    } else if (TrySubmitRawDirectFifoDraw(s.rawPacket.data(), s.rawExpected, prim, fmt, verts)) {
         return;
     }
     // Aurora refused it: run the same bytes through the per-attribute path.
