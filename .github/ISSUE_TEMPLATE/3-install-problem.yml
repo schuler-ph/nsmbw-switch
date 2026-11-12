@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please check [Getting the game files](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation#getting-the-game-files) first: most setup problems are a different region or revision of the game, or a disc image instead of the extracted folder.
+        Please check [Getting the game files](https://github.com/schuler-ph/nsmbw-switch#getting-the-game-files) first: most setup problems are a different region or revision of the game, or a disc image instead of the extracted folder.
 
         If the game starts but stops early, attach `console.log` from the newest folder in:
         - **Windows:** `Documents\MarioWiiSaveData\Logs`
