@@ -134,9 +134,6 @@ counter in the top left); later starts reuse the cache.
 
 ## Controls
 
-> [!NOTE]
-> This button layout and the motion controls are new and have not been checked on the console yet.
-
 Player 1 is the console's player-1 controller, or the attached Joy-Cons in handheld mode. Players 2-4
 join as their controllers connect, in the console's own order. A single Joy-Con held sideways counts
 as one controller (pair it with SL+SR).

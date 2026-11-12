@@ -1,44 +1,58 @@
 name: Performance problem
-description: Low FPS, stutters, or the game runs worse than expected.
+description: Low FPS, stutters, or the game runs slower than it should.
 title: "[Perf] "
 labels: ["performance"]
 body:
   - type: markdown
     attributes:
       value: |
-        **Where to find your logs:**
-        - **Windows:** `Documents\MarioWiiSaveData\Logs`
-        - **Linux:** `~/.local/share/WiiCompiled/Logs`
-        - **Android:** connect the phone to a computer with a USB cable and open `Android/data/com.wither.nsmbw/files/Logs`
+        Full speed needs the console **docked with the CPU at 1785 MHz** (sys-clk profile on the game you start hbmenu through, or global); see the README's Performance section. At the stock clock it ran at about 70 % speed in the last measurement; that is known.
 
-        Every run gets its own folder. Open the **newest** one and attach `console.log`. Turning on **Show FPS Counter** (Settings > Video) helps you tell us how slow it gets.
+        Attach `sdmc:/switch/nsmbw/log.txt` and `stderr.txt` from the run.
   - type: checkboxes
     id: preflight
     attributes:
       label: Before you continue
       options:
-        - label: I'm on the latest release.
+        - label: I built the current `main` of this repository.
           required: true
         - label: I searched the existing issues and nobody has reported this yet.
           required: true
-        - label: Nothing else was hogging the device (recording software, browser video, battery saver, etc.).
+        - label: I checked the clock with sys-clk's overlay or log while playing.
           required: true
-  - type: dropdown
-    id: platform
+  - type: input
+    id: commit
     attributes:
-      label: Platform
+      label: Commit
+      description: "`git rev-parse --short HEAD` in your clone."
+      placeholder: "e.g. aff6578"
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Switch model
       options:
-        - Android
-        - Windows
-        - Linux
+        - Switch 1 (original, Erista)
+        - Switch 1 (V2, Mariko)
+        - Switch Lite
+        - Switch OLED
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Docked or handheld
+      options:
+        - Docked
+        - Handheld
     validations:
       required: true
   - type: input
-    id: version
+    id: clock
     attributes:
-      label: Version
-      description: The release you downloaded (it's in the file name).
-      placeholder: "e.g. 0.1.2"
+      label: CPU / GPU / memory clock
+      placeholder: "e.g. 1785 / 768 / 1600 MHz"
     validations:
       required: true
   - type: dropdown
@@ -49,7 +63,7 @@ body:
         - Constant low FPS everywhere
         - Stutters / hitches (mostly smooth, brief freezes)
         - Only certain levels or situations are slow
-        - Only in LAN games
+        - Only on the first visit of a level
         - Got worse after an update
     validations:
       required: true
@@ -57,7 +71,7 @@ body:
     id: doing
     attributes:
       label: When does it happen?
-      description: Which levels, how many players, LAN or not, and roughly what FPS you see.
+      description: Which levels, how many players, and roughly what FPS you see.
       placeholder: "e.g. Drops to ~40 FPS in World 5-Tower with four players, fine on the world map…"
     validations:
       required: true
@@ -65,20 +79,5 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Attach `console.log` from your newest run folder.
+      description: Attach `log.txt` and `stderr.txt`.
       render: text
-  - type: input
-    id: device
-    attributes:
-      label: Device
-      description: Phone model, or the PC's CPU and GPU (with the driver version).
-      placeholder: "e.g. Pixel 7 / Ryzen 5 5600 + RTX 3060, driver 560.94"
-    validations:
-      required: true
-  - type: input
-    id: os
-    attributes:
-      label: OS version
-      placeholder: "e.g. Android 14 / Windows 11 24H2 / Fedora 44"
-    validations:
-      required: true
