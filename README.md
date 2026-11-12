@@ -1,15 +1,4 @@
-> [!NOTE]
-> **This is a fork with an experimental Nintendo Switch 1 port** (homebrew, docked, no downloads:
-> you build it from your own disc). See [`projects/nsmbw/SWITCH.md`](projects/nsmbw/SWITCH.md). The
-> fork is based on [WitherBlitz/NSMB-Wii-Multiplayer-Recompilation](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation)
-> 0.4.0 (`2ff64f5`); its changes since then are listed under [Changes in this fork](#changes-in-this-fork).
-> Everything below this box is the upstream README, including its release links.
-
-**This is irrelevant to the recompilation, but I'm currently trying to find testers that're willing to test my new Android app out, it's multi-use and turns your phone into a PC once connected to a Monitor, or an Android TV when connected to a TV. If you're willing to test it, friend me at "WitherBlltz" on Discord. This is a Google Play Store Exclusive and doesn't work on IOS (yet)! you may need to pay 5 cents on the Play Store to download the app as a heads up! That was the minimum Google would let me put it as.**
-
-**support my coffee addiction, and the recompilation/decompilation on my cashapp! $WitherBlitz**
-
-# NSMB Wii Multiplayer Recompilation
+# NSMB Wii Multiplayer Recompilation, with a Nintendo Switch port
 
 <p align="center">
   <a href="https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest"><img alt="Android 9+, arm64" src="https://img.shields.io/badge/Android-9%2B%20%C2%B7%20arm64-3DDC84?logo=android&amp;logoColor=white"></a>
@@ -26,6 +15,16 @@ A native port of New Super Mario Bros. Wii for Android phones and Windows and Li
 static recompilation.
 
 There's no emulator in the loop, no interpreter, no JIT, no PowerPC anywhere at runtime.
+
+> [!NOTE]
+> **This is a fork that adds a Nintendo Switch 1 port** (homebrew; you build it yourself from your
+> own disc, there are no Switch downloads): see [Nintendo Switch](#nintendo-switch). It builds
+> entirely on [WitherBlitz](https://github.com/WitherBlitz)'s
+> [NSMB Wii Multiplayer Recompilation](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation),
+> version 0.4.0 (`2ff64f5`): the recompiled game, its runtime and everything for Android, Windows and
+> Linux are his work, described in the rest of this README. The Switch port and its changes are
+> listed under [Changes in this fork](#changes-in-this-fork). Releases, the Android app and the PC
+> versions come from [his repository](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation/releases/latest).
 
 **Port made by [WitherBlitz](https://github.com/WitherBlitz) with the help of
 [WiiCompiled](https://github.com/patchzyy/Wiicompiled)'s code, and was entirely coded by
@@ -44,6 +43,137 @@ Claude Opus 5.5.**
   <img src="docs/screenshots/android-title.webp" alt="New Super Mario Bros. Wii running natively on an Android phone, with the on-screen Wii Remote controls" width="800">
   <br><sub>Running natively on Android at 60 fps, with the on-screen sideways Wii Remote.</sub>
 </p>
+
+---
+
+## Nintendo Switch
+
+The Switch port runs the same translated game code as the Linux build, as a homebrew program
+(`nsmbw.nro`), with a Switch platform layer, aurora on Dawn's deko3d backend, and libnx. There are
+**no Switch downloads**: you build it from your own disc. The `.nro` contains the game's translated
+code, so do not share it.
+
+> [!IMPORTANT]
+> You need your own **USA `SMNE01` revision 1** disc, extracted with Dolphin (see
+> [Getting the game files](#getting-the-game-files)), and a Switch that runs custom firmware. Nothing
+> here tells you how to get either.
+
+### What has been measured
+
+On one Switch 1 (Erista, Atmosphère), **docked, with the CPU at 1785 MHz** set by sys-clk (GPU 768
+MHz, memory 1600 MHz), two players, builds of this fork from November 2026 with no options set:
+
+- Levels 1-1, 4-1 (water), 2-3 (spotlights), 1-4, 4-37 (airship), castle 1 (lava) and 5-3 (poison):
+  59-60 fps in the level, 98.1-99.8 % game speed, audio at or above 99.6 % speed.
+- The first visit to a level compiles new GPU pipelines; while that happens, some objects can be
+  missing for a moment instead of the game stalling.
+- At the stock docked CPU clock (1020 MHz) the game thread was the limit: about 43 fps and 72 % game
+  speed, measured before later speed-ups and not measured again since.
+
+Not measured so far: other levels and a full playthrough, handheld mode with the current build, and
+other Switch models (Mariko, Lite, OLED). Reports are welcome. Raising clocks with sys-clk is at your
+own risk.
+
+### What you need
+
+- A Switch 1 with Atmosphère and hbmenu. Start hbmenu through a title override (hold R while
+  starting a game), not from the album: the game needs the memory of a full application.
+- [sys-clk](https://github.com/retronx-team/sys-clk) with a CPU profile of 1785 MHz for this
+  program while docked, for full speed.
+- A Linux machine or WSL2 (tested: Ubuntu 24.04) with about 30 GB free and 16 GB of RAM.
+- devkitPro with devkitA64, libnx, deko3d, switch-mesa and switch-tools. Tested versions: the
+  `devkitpro/devkita64:20260219` Docker image (devkitA64 r29.2, libnx 4.12.0, deko3d 0.5.0,
+  switch-tools 1.13.1).
+- Everything the Linux build needs for translating the game
+  ([`projects/nsmbw/BUILDING.md`](projects/nsmbw/BUILDING.md), sections 1-3 and 6), plus `meson`,
+  `bison`, `flex` and `python3-mako` for the graphics dependencies.
+
+### Build
+
+1. Translate the game as for Linux ([`BUILDING.md`](projects/nsmbw/BUILDING.md), section 6).
+   `build-linux.sh` runs steps 2 and 3 and fills `generated/`; the Switch build uses the same
+   translated code.
+
+2. Build Dawn with the deko3d backend and libuam once (about 35 minutes with 12 jobs). The script
+   downloads Dawn (with its submodules), libuam and two patcher scripts from WiiCompiled-Switch at
+   pinned commits into the folder you give it, applies the patches from this repository and builds
+   both as static libraries:
+
+   ```
+   source /etc/profile.d/devkitpro.sh
+   projects/nsmbw/tools/build-switch-deps.sh ../switch-deps
+   ```
+
+3. Build the `.nro` and lay out an SD card folder:
+
+   ```
+   D=../switch-deps
+   projects/nsmbw/tools/build-switch.sh --dawn-src $D/dawn --dawn-build $D/dawn-build-switch \
+     --uam $D/uam/build-switch/libuam.a --stage ../sd-stage
+   ```
+
+   The first build takes about 15 minutes with 4 jobs (each translated shard needs about 1 GB of
+   RAM); the result is `../build-wb-switch/nsmbw.nro`, about 110 MiB.
+
+### Install
+
+Copy `../sd-stage/switch/nsmbw/` to `sdmc:/switch/nsmbw/` on the SD card, then add your extracted
+disc as `sdmc:/switch/nsmbw/game/` (with `files/` and `sys/` in it):
+
+```
+sdmc:/switch/nsmbw/
+  nsmbw.nro
+  dsp_coef.bin
+  initial_pipeline_cache.db
+  wii_bootstrap/
+  game/files/ ...
+  game/sys/ ...
+```
+
+Start `nsmbw` from hbmenu. The first start compiles about 1 700 shaders (about 10 minutes, with a
+counter in the top left); later starts reuse the cache.
+
+### Switch controls
+
+Player 1 is the console's player-1 controller, or the attached Joy-Cons in handheld mode. Players 2-4
+join as their controllers connect, in the console's own order. A single Joy-Con held sideways counts
+as one controller (pair it with SL+SR).
+
+| Switch | Game |
+| --- | --- |
+| A, B | jump (2) |
+| Y, X | run, pick up (1) |
+| ZL, ZR, R (SL, SR on a sideways Joy-Con) | shake: spin jump |
+| L (stick click on a sideways Joy-Con) | bubble in multiplayer (A) |
+| + | pause |
+| - (holding + on a sideways Joy-Con) | the remote's - |
+
+In menus, A and B confirm and Y and X go back, as 2 and 1 do on the Wii Remote.
+
+Tilting and shaking the controller works as on a Wii Remote. `NSMBW_SWITCH_MOTION` in `env.txt`
+(below) chooses which controllers do that: `on` (default), `nohandheld` (not the console itself) or
+`off`.
+
+### Logs and options
+
+- `sdmc:/switch/nsmbw/log.txt` and `stderr.txt` are written on every start; attach them to issues.
+- `sdmc:/switch/nsmbw/env.txt` sets runtime options, one `NAME=value` per line (`#` starts a
+  comment). The Switch defaults are built in; you only need this file for experiments.
+- `sdmc:/switch/nsmbw/gfx_flags.txt` sets `AURORA_GFX_FLAGS` (for example `validate`) for graphics
+  debugging. Delete it afterwards: it slows the game down.
+
+### Where the Switch code lives
+
+| Path | What |
+| --- | --- |
+| `runtime/src/platform/switch/` | entry point, file system, logging, memory and thread setup |
+| `aurora-main/lib/switch/` | window/surface, controller input, GL entry points for switch-mesa |
+| `aurora-main/cmake/patches/*-nintendo-switch-platform.patch` | Switch support for Dawn (with the deko3d backend), SDL3, Abseil, SQLite and Tracy, taken unchanged from DriftDroid |
+| `projects/nsmbw/tools/patches/` | fixes on top of Dawn and libuam |
+| `projects/nsmbw/tools/build-switch-deps.sh`, `build-switch.sh` | build steps 2 and 3 above |
+
+Several runtime parts are ported from [DriftDroid](https://github.com/dorPXP/driftdroid) (Mario Kart
+Wii on Switch, GPL-3.0); the files say which. See [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
 
 ---
 
@@ -296,7 +426,7 @@ Android) and Python 3. The full steps, from Dolphin's extraction to the APK and 
 - The NSMBW project: [`projects/nsmbw`](projects/nsmbw) (translator config, function map, tools).
 - The runtime, retargeted from Mario Kart Wii to NSMBW: [`runtime`](runtime).
 - The Android app: [`android`](android).
-- The Nintendo Switch build (this fork): [`projects/nsmbw/SWITCH.md`](projects/nsmbw/SWITCH.md).
+- The Nintendo Switch build (this fork): [Nintendo Switch](#nintendo-switch).
 - WiiCompiled's own README, for the translator and the runtime it comes from:
   [`docs/WiiCompiled-README.md`](docs/WiiCompiled-README.md).
 

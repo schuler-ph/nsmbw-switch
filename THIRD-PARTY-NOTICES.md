@@ -189,7 +189,7 @@ unmodified, with their license texts, in the installer's `licenses/` folder.
 
 ## Nintendo Switch build (this fork)
 
-The Switch build ([`projects/nsmbw/SWITCH.md`](projects/nsmbw/SWITCH.md)) has no release downloads;
+The Switch build ([README](README.md#nintendo-switch)) has no release downloads;
 it is built locally. It additionally links the components below into `nsmbw.nro`, besides the ones
 from the table above that it builds for the Switch (SDL, Abseil, SQLite, Tracy, Mbed TLS and the
 others listed there).
