@@ -206,7 +206,7 @@ Open an issue with your Switch model, docked or handheld, the clocks you set, wh
 ## AI usage
 
 Like the upstream port, the Switch port was coded with Anthropic's Claude models, directed and tested
-on the console by Philipp Schuler.
+on the console by schuler-ph.
 
 ## Credits
 
@@ -237,7 +237,7 @@ Bundled third-party components and their licenses live in
 
 ## Changes in this fork
 
-Modified from upstream `2ff64f5` (2026-11-05) by Philipp Schuler, November 2026, as required by
+Modified from upstream `2ff64f5` (2026-11-05) by schuler-ph, November 2026, as required by
 section 5 of the GPLv3. The full list is `git diff 2ff64f5`; in short:
 
 - A Nintendo Switch platform layer: `runtime/src/platform/switch/`, `aurora-main/lib/switch/`, the

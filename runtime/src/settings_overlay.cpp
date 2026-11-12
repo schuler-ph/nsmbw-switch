@@ -1420,7 +1420,7 @@ void DrawStartupScreen() {
         // The Switch port's own credits (schuler-ph/nsmbw-switch); other platforms keep upstream's.
         constexpr const char* kTitle = "NSMBW for Nintendo Switch";
         constexpr const char* kCredit =
-            "Switch port by Philipp Schuler, built on WitherBlitz's NSMBW recompilation and WiiCompiled.";
+            "Switch port by schuler-ph, built on WitherBlitz's NSMBW recompilation and WiiCompiled.";
         // At the bottom of the screen.
         constexpr const char* kReport = "Report bugs at github.com/schuler-ph/nsmbw-switch";
 #else
