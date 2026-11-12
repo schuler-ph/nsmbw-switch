@@ -129,6 +129,10 @@ bool copy_src_nosync();
 // is on; then what is buffered is handed to the GX thread and the producer carries on. Anything
 // that reads decoded state (EFB copies, the frame seal) still syncs on its own.
 void draw_done();
+// NSMBW: with the GX thread (and 4+ hardware threads), GXCopyTex and the texture-copy setters are
+// queued as commands and run on it in order (GX_LOAD_AURORA_COPY_TEX and friends) instead of waiting
+// for it. Copies whose result lands in guest RAM still run in place. NSMBW_ASYNC_COPY=0 or 1 forces it.
+bool async_copies();
 
 // AuroraBeginCommandDigest: while on, process() and texture copies fold what they see into the digest.
 extern bool g_commandDigestOn;

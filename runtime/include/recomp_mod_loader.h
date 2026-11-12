@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-#include "isa/ppc_isa_tls.h"
+#include "guest_thread_state.h"
 
 struct CpuContext;
 
@@ -23,19 +23,14 @@ struct MemoryReservation {
 };
 
 // Diagnostic-only, read by fatal reporters (unmapped access, executable-write, CPU dumps).
-// Defined here as `inline thread_local` with a constant initializer, not `extern thread_local`
-// in the .cpp: every indirect dispatch scopes this, so an out-of-line ctor/dtor would cost two
-// un-inlinable calls plus a register spill each for three instructions of work.
-inline thread_local uint32_t g_currentTranslatedExecutionAddress = 0;
-// Hot-path access (isa/ppc_isa_tls.h).
-MKW_HOT_TLS_ACCESSOR(CurrentTranslatedExecutionAddressTls, uint32_t,
-                     g_currentTranslatedExecutionAddress,
-                     "_ZN9RecompMod35g_currentTranslatedExecutionAddressE")
-
+// The backing variable is g_guestThreadState.translatedExecutionAddress (guest_thread_state.h),
+// header-inline with a constant initializer: every indirect dispatch scopes this, so an
+// out-of-line ctor/dtor would cost two un-inlinable calls plus a register spill each for three
+// instructions of work.
 class ScopedTranslatedExecutionAddress {
 public:
     explicit ScopedTranslatedExecutionAddress(uint32_t address) noexcept {
-        uint32_t& current = CurrentTranslatedExecutionAddressTls();
+        uint32_t& current = GuestThreadStateTls().translatedExecutionAddress;
         previous_ = current;
         // Address 0 means "nothing new to report" - the enclosing scope's value
         // stays visible, and the unconditional restore below keeps nesting exact.
@@ -45,7 +40,7 @@ public:
     }
 
     ~ScopedTranslatedExecutionAddress() noexcept {
-        CurrentTranslatedExecutionAddressTls() = previous_;
+        GuestThreadStateTls().translatedExecutionAddress = previous_;
     }
 
     ScopedTranslatedExecutionAddress(const ScopedTranslatedExecutionAddress&) = delete;

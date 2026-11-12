@@ -1,7 +1,7 @@
 #pragma once
 // Inline thread-pointer access for the few thread_locals every guest call touches
-// (g_currentCpuContext, the translated-execution address, the FPSCR[NI] mirror and the
-// indirect-dispatch memos).
+// (g_guestThreadState with the current CpuContext and the translated-execution address, the
+// FPSCR[NI] mirror and the resolved indirect-dispatch memo).
 //
 // devkitA64 compiles the Switch build with -mtp=soft: each thread_local access is a call to
 // libnx's __aarch64_read_tp (mrs tpidrro_el0; ldr x0, [x0, #0x1f8]; ret), and GCC treats that
