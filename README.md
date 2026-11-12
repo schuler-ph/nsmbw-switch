@@ -53,8 +53,9 @@ own risk.
 
 - A Switch 1 with Atmosphère and hbmenu. Start hbmenu through a title override (hold R while
   starting a game), not from the album: the game needs the memory of a full application.
-- [sys-clk](https://github.com/retronx-team/sys-clk) with a CPU profile of 1785 MHz for this
-  program while docked, for full speed.
+- [sys-clk](https://github.com/retronx-team/sys-clk) with a docked CPU profile of 1785 MHz, for full
+  speed. sys-clk sees the game you start hbmenu through, not the `.nro`, so set the profile on that
+  game (or as the global profile).
 - Your own **USA `SMNE01` revision 1** disc of New Super Mario Bros. Wii and Dolphin on a computer
   to extract it. Other regions and revisions are rejected: the port hooks the game at exact
   addresses.
