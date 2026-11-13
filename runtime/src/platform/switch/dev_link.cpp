@@ -287,9 +287,17 @@ void HandleCommand(const std::string& line) {
         Answer("quit");
         PerfMonitor::RequestExit("quit from the PC (dev link)");
     } else if (verb == "overlay") {
-        const bool on = rest == "on" || rest == "1" || (rest.empty() || rest == "toggle" ? !PerfMonitor::Overlay() : false);
-        PerfMonitor::SetOverlay(on);
-        Answer(std::string("overlay ") + (on ? "on" : "off"));
+        using PerfMonitor::OverlayMode;
+        OverlayMode mode = OverlayMode::Off;
+        if (rest == "on" || rest == "1" || rest == "full") {
+            mode = OverlayMode::Full;
+        } else if (rest == "demo" || rest == "2") {
+            mode = OverlayMode::Demo;
+        } else if (rest.empty() || rest == "toggle") {
+            mode = PerfMonitor::Overlay() == OverlayMode::Off ? OverlayMode::Full : OverlayMode::Off;
+        }
+        PerfMonitor::SetOverlay(mode);
+        Answer(std::string("overlay ") + (mode == OverlayMode::Full ? "on" : mode == OverlayMode::Demo ? "demo" : "off"));
     } else if (verb == "summary") {
         PerfMonitor::LogRunSummary("requested from the PC");
         Answer("summary");

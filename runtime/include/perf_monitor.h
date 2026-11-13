@@ -11,8 +11,9 @@
 //     audio_mix, audio_out = SDL's output thread, devlink), in % of one core and in ms per frame,
 //   - on the Switch, CPU/GPU/EMC clocks (clkrst), SoC temperature (ts) and docked/handheld, where
 //     the services answer.
-// Shown as an ImGui overlay (NSMBW_PERF_OVERLAY=1, or "overlay on" over the development link),
-// sent to the PC as the development link's "S" record, and logged as a per-scene table when the
+// Shown as an ImGui overlay (NSMBW_PERF_OVERLAY=1, or "overlay on" over the development link) or,
+// for recording clips, as a three-line panel in the top left corner with only FPS, game and audio
+// speed, clocks and dock state (NSMBW_PERF_OVERLAY=demo, or "overlay demo"), sent to the PC as the development link's "S" record, and logged as a per-scene table when the
 // program ends through the runtime ("[perf] scene ..." lines).
 //
 // Self-ending test runs: NSMBW_EXIT_AFTER_S=<seconds> ends the program after that much play time,
@@ -32,8 +33,9 @@ void OnFrame(const DevLink::FrameSample& sample) noexcept;
 void NoteAudio(uint32_t frames, uint32_t rate, bool queued) noexcept;
 // settings_overlay.cpp, inside the ImGui frame.
 void DrawOverlay() noexcept;
-void SetOverlay(bool on) noexcept;
-bool Overlay() noexcept;
+enum class OverlayMode : int { Off = 0, Full = 1, Demo = 2 };
+void SetOverlay(OverlayMode mode) noexcept;
+OverlayMode Overlay() noexcept;
 // Logs the per-scene table now ("[perf] ..." on stderr); also done before a runtime-initiated exit.
 void LogRunSummary(const char* reason) noexcept;
 // Ends the program (on the Switch: the whole process, back to the HOME menu) after logging the

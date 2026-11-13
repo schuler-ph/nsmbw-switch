@@ -94,7 +94,7 @@ struct Snapshot {
 std::atomic<uint64_t> g_audioFrames{0}, g_audioDropped{0};
 std::atomic<uint32_t> g_audioRate{0};
 
-std::atomic<bool> g_overlay{false};
+std::atomic<OverlayMode> g_overlay{OverlayMode::Off};
 std::atomic<bool> g_exitPending{false};
 
 std::mutex g_mutex;  // guards everything below (game thread writes, overlay/devlink/summary read)
@@ -272,8 +272,12 @@ void OnFrame(const DevLink::FrameSample& sample) noexcept {
     if (g_firstFrame == Clock::time_point{}) {
         g_firstFrame = now;
         aurora_register_perf_thread("game");
-        if (const char* overlay = std::getenv("NSMBW_PERF_OVERLAY"); overlay != nullptr && *overlay == '1') {
-            g_overlay.store(true, std::memory_order_relaxed);
+        if (const char* overlay = std::getenv("NSMBW_PERF_OVERLAY"); overlay != nullptr) {
+            if (std::strcmp(overlay, "1") == 0 || std::strcmp(overlay, "full") == 0) {
+                g_overlay.store(OverlayMode::Full, std::memory_order_relaxed);
+            } else if (std::strcmp(overlay, "2") == 0 || std::strcmp(overlay, "demo") == 0) {
+                g_overlay.store(OverlayMode::Demo, std::memory_order_relaxed);
+            }
         }
         g_window.start = now;
         g_window.retraceStart = sample.retraceCount;
@@ -326,20 +330,84 @@ void NoteAudio(uint32_t frames, uint32_t rate, bool queued) noexcept {
     if (!queued) g_audioDropped.fetch_add(frames, std::memory_order_relaxed);
 }
 
-void SetOverlay(bool on) noexcept {
-    g_overlay.store(on, std::memory_order_relaxed);
+void SetOverlay(OverlayMode mode) noexcept {
+    g_overlay.store(mode, std::memory_order_relaxed);
 }
 
-bool Overlay() noexcept {
+OverlayMode Overlay() noexcept {
     return g_overlay.load(std::memory_order_relaxed);
 }
 
+namespace {
+
+// Green at full speed, yellow from 90 %, red below.
+ImVec4 SpeedColor(double pct) {
+    return pct >= 99.0   ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f)
+           : pct >= 90.0 ? ImVec4(0.95f, 0.8f, 0.3f, 1.0f)
+                         : ImVec4(0.95f, 0.35f, 0.3f, 1.0f);
+}
+
+// The clip overlay: what a viewer needs to judge "60 FPS at full speed on the console", nothing a
+// developer reads. FPS and the 1 % low together, game and audio speed beside them (FPS without
+// speed proves nothing), clocks and dock state so the sys-clk setting is on screen.
+void DrawDemoOverlay(const Snapshot& s) {
+    // Sized like the startup screen: by the output height, 720p as 1 (the clip is read at phone size,
+    // so the main lines use twice the debug font, the clock line one and a half).
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float ui = std::max(1.0f, viewport->Size.y / 720.0f);
+    const float margin = 16.0f * ui;
+    ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x + margin, viewport->Pos.y + margin), ImGuiCond_Always,
+                            ImVec2(0.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.6f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 255));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f * ui, 6.0f * ui));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f * ui);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoDecoration |
+                                        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs |
+                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoNav |
+                                        ImGuiWindowFlags_NoSavedSettings;
+    const ImVec4 secondary(0.85f, 0.85f, 0.85f, 1.0f);
+    if (ImGui::Begin("Perf Demo", nullptr, kFlags)) {
+        ImGui::SetWindowFontScale(2.0f * ui);
+        if (!s.valid) {
+            ImGui::TextUnformatted("FPS --");
+        } else {
+            ImGui::TextColored(SpeedColor(s.speedPct), "%.0f FPS", s.fps);
+            ImGui::SameLine();
+            ImGui::TextColored(secondary, " 1%% low %.0f", s.low1);
+            ImGui::TextColored(SpeedColor(std::min(s.speedPct, s.audioPct)), "speed %.0f%%  audio %.0f%%",
+                               s.speedPct, s.audioPct);
+            ImGui::SetWindowFontScale(1.5f * ui);
+            const char* mode = s.docked == 1 ? "docked" : s.docked == 0 ? "handheld" : "";
+            if (s.cpuMHz != 0) {
+                ImGui::TextColored(secondary, "CPU %u  GPU %u  RAM %u MHz  %s", s.cpuMHz, s.gpuMHz, s.emcMHz,
+                                   mode);
+            } else if (*mode != '\0') {
+                ImGui::TextColored(secondary, "%s", mode);
+            }
+            if (s.pipelines > 0) ImGui::TextColored(secondary, "compiling shaders (%u)", s.pipelines);
+        }
+        ImGui::SetWindowFontScale(1.0f);
+    }
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor();
+}
+
+} // namespace
+
 void DrawOverlay() noexcept {
-    if (!g_overlay.load(std::memory_order_relaxed)) return;
+    const OverlayMode mode = g_overlay.load(std::memory_order_relaxed);
+    if (mode == OverlayMode::Off) return;
     Snapshot s;
     {
         std::lock_guard lock(g_mutex);
         s = g_snapshot;
+    }
+    if (mode == OverlayMode::Demo) {
+        DrawDemoOverlay(s);
+        return;
     }
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(10.0f, io.DisplaySize.y - 10.0f), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
@@ -353,10 +421,7 @@ void DrawOverlay() noexcept {
         if (!s.valid) {
             ImGui::TextUnformatted("perf: waiting for the first second");
         } else {
-            const ImVec4 speedColor = s.speedPct >= 99.0   ? ImVec4(0.4f, 0.9f, 0.4f, 1.0f)
-                                      : s.speedPct >= 90.0 ? ImVec4(0.95f, 0.8f, 0.3f, 1.0f)
-                                                           : ImVec4(0.95f, 0.35f, 0.3f, 1.0f);
-            ImGui::TextColored(speedColor, "FPS %.1f  speed %.1f%%  audio %.0f%%", s.fps, s.speedPct, s.audioPct);
+            ImGui::TextColored(SpeedColor(s.speedPct), "FPS %.1f  speed %.1f%%  audio %.0f%%", s.fps, s.speedPct, s.audioPct);
             ImGui::Text("1%% low %.1f  VI %.1f/%.1f Hz  scene 0x%03X", s.low1, s.viHz, s.nominalHz, s.scene);
             ImGui::Text("frame %.1f avg %.1f max ms, %u slow", s.frameAvg, s.frameMax, s.slow);
             ImGui::Text("game %.1f (gx %.1f)  present %.1f  pace %.1f ms", s.gameAvg, s.gxAvg, s.presentAvg,
