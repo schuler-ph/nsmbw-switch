@@ -135,6 +135,10 @@ sdmc:/switch/nsmbw/
 Start `nsmbw` from hbmenu. The first start compiles about 1 700 shaders (about 10 minutes, with a
 counter in the top left); later starts reuse the cache.
 
+To start it from the HOME menu instead, create a forwarder for `sdmc:/switch/nsmbw/nsmbw.nro` with
+[sphaira](https://github.com/ITotalJustice/sphaira) (Install Forwarder, address space 39-bit); this
+needs signature patches on the console.
+
 ## Controls
 
 Player 1 is the console's player-1 controller, or the attached Joy-Cons in handheld mode. Players 2-4
