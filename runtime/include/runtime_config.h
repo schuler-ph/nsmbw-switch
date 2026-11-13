@@ -56,6 +56,7 @@ struct RuntimeUserConfig {
     std::optional<bool> touchControls;  // NSMBW: [video] touch_controls, written by the Android app
     std::optional<uint32_t> frameGraphSize;  // NSMBW: [video] frame_graph_size, percent (5-200; 50 = the original size)
     std::optional<bool> vsync;          // NSMBW: [video] vsync, presents wait for the display (Windows)
+    std::optional<bool> batterySaver;   // NSMBW: [video] battery_saver, every other frame drawn (30 FPS)
     std::optional<std::string> language;  // NSMBW: [game] language, "en" "es" "fr" (the USA disc's) or "it"
     std::optional<bool> noTimeLimit;      // NSMBW: [game] no_time_limit, the course timer stands still
     std::optional<bool> infiniteLives;    // NSMBW: [game] infinite_lives, a miss costs no life
@@ -84,6 +85,11 @@ struct RuntimeUserConfig {
     // (Dolphin's "continuous scanning"), so a remote that dropped or was switched on
     // after launch shows up without restarting.
     std::optional<bool> wiiContinuousScan;
+    // NSMBW: [input] bluetooth_passthrough, "off" (the default until it's been tried on real hardware),
+    // "auto" or "on". With a USB Bluetooth adapter this runtime can claim (on the WinUSB driver on Windows,
+    // permitted on Linux), the game's own Wii Remote stack drives real Wii Remotes through it as on a Wii,
+    // speaker included (bt_passthrough.h); "auto" uses one when there is one. Read once at startup.
+    std::optional<std::string> bluetoothPassthrough;
     // Accelerometer zero-point correction for the Bluetooth Wii Remote, in g and in
     // SDL's sensor frame (x right, y out of the button face, z towards the user).
     // SDL's Wii driver falls back to a nominal zero point when its read of the
@@ -111,11 +117,19 @@ struct RuntimeUserConfig {
     // comma-separated SDL-style physical button names ("south", or
     // "dpad_up,left_shoulder") as values; pressing either bound button counts.
     std::array<std::optional<std::string>, 12> controllerButtons;
+    // The sideways remote's own motions, picked in F10 > Controller settings: tilt_left, tilt_right and
+    // shake, each one physical input name ("left_trigger", "right_stick_left@30"). Unset = the built-in input.
+    std::array<std::optional<std::string>, 3> remoteActions;
     std::optional<bool> rumbleEnabled;
     std::optional<int32_t> muteHotkey;
     std::map<std::string, std::string> controllerExpressions;
     // NSMBW: [keyboard] action = "comma-separated SDL scancode names" (keybinds.h).
     std::map<std::string, std::string> keyboardBindings;
+    // Combination bindings ([keyboard] and [controller] "<action>_combos"): lists of member lists,
+    // TOML arrays so no member name needs a separator ("jump_combos = [["Left Ctrl", "X"]]"). Older
+    // builds read only strings from those tables, and pass over these.
+    std::map<std::string, std::vector<std::vector<std::string>>> keyboardCombos;
+    std::map<std::string, std::vector<std::vector<std::string>>> controllerCombos;
 };
 
 namespace RuntimeConfigFile {
@@ -211,10 +225,10 @@ inline bool IsSupportedDisplayMode(std::string_view value) {
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 
-// 240 was offered by an early build and is no longer supported; a saved 240 is
-// migrated to 180 at the parse site.
+// NSMBW: 0 (off), 60 (only does anything with Battery Saver, whose pictures come at 30), 120, 180,
+// 240 and 300.
 inline bool IsSupportedFrameInterpolationFps(uint32_t value) {
-    return value == 0 || value == 120 || value == 180;
+    return value == 0 || value == 60 || value == 120 || value == 180 || value == 240 || value == 300;
 }
 
 // NSMBW: the compat build (for older processors) lives in a "compat" folder inside the download; its
@@ -551,6 +565,32 @@ inline void AppendOverlayRoots(RuntimeUserConfig& config, const std::string& roo
     }
 }
 
+// "<action>_combos": a combination binding key.
+inline bool IsComboKey(std::string_view key) {
+    constexpr std::string_view kSuffix = "_combos";
+    return key.size() > kSuffix.size() && key.substr(key.size() - kSuffix.size()) == kSuffix;
+}
+
+// [["Left Ctrl", "X"], ...]: the member lists, leaving out anything that isn't a list of strings.
+inline std::vector<std::vector<std::string>> ReadCombos(const toml::value& value) {
+    std::vector<std::vector<std::string>> combos;
+    for (const auto& entry : value.as_array()) {
+        if (!entry.is_array()) {
+            continue;
+        }
+        std::vector<std::string> members;
+        for (const auto& member : entry.as_array()) {
+            if (member.is_string()) {
+                members.push_back(member.as_string());
+            }
+        }
+        if (!members.empty()) {
+            combos.push_back(std::move(members));
+        }
+    }
+    return combos;
+}
+
 // Reads every supported setting out of a parsed Config.toml document.
 inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     RuntimeUserConfig config;
@@ -561,6 +601,11 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     for (size_t index = 0; index < buttonKeys.size(); ++index) {
         config.controllerButtons[index] =
             FindConfigValue<std::string>(document, "controller", buttonKeys[index]);
+    }
+    static constexpr std::array<std::string_view, 3> remoteActionKeys = {"tilt_left", "tilt_right", "shake"};
+    for (size_t index = 0; index < remoteActionKeys.size(); ++index) {
+        config.remoteActions[index] =
+            FindConfigValue<std::string>(document, "controller", remoteActionKeys[index]);
     }
 
     config.rumbleEnabled = FindConfigValue<bool>(document, "controller", "rumble");
@@ -573,6 +618,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         for (const auto& [key, value] : section->as_table()) {
             if (key.rfind("expr_", 0) == 0 && value.is_string()) {
                 config.controllerExpressions[key] = value.as_string();
+            } else if (IsComboKey(key) && value.is_array()) {
+                config.controllerCombos[key] = ReadCombos(value);
             }
         }
     }
@@ -582,6 +629,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         for (const auto& [key, value] : section->as_table()) {
             if (value.is_string()) {
                 config.keyboardBindings[key] = value.as_string();
+            } else if (IsComboKey(key) && value.is_array()) {
+                config.keyboardCombos[key] = ReadCombos(value);
             }
         }
     }
@@ -619,9 +668,8 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         config.displayMode = *value;
     }
     if (auto value = FindConfigUint(document, "video", "frame_interpolation_fps")) {
-        const uint32_t migrated = *value == 240u ? 180u : *value;
-        if (IsSupportedFrameInterpolationFps(migrated)) {
-            config.frameInterpolationFps = migrated;
+        if (IsSupportedFrameInterpolationFps(*value)) {
+            config.frameInterpolationFps = *value;
         }
     }
     config.metalFxSpatialUpscaling =
@@ -634,6 +682,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.frameGraphSize = FindConfigUint(document, "video", "frame_graph_size");
     config.touchControls = FindConfigValue<bool>(document, "video", "touch_controls");
     config.vsync = FindConfigValue<bool>(document, "video", "vsync");
+    config.batterySaver = FindConfigValue<bool>(document, "video", "battery_saver");
     if (auto value = FindConfigValue<std::string>(document, "game", "language");
         value && (*value == "en" || *value == "es" || *value == "fr" || *value == "it")) {
         config.language = *value;
@@ -671,6 +720,10 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
         FindConfigValue<bool>(document, "audio", "attenuate_music_when_media_plays");
     config.wiiRemotes = FindConfigValue<bool>(document, "controller", "wii_remotes");
     config.wiiContinuousScan = FindConfigValue<bool>(document, "controller", "wii_continuous_scan");
+    if (auto value = FindConfigValue<std::string>(document, "input", "bluetooth_passthrough");
+        value && (*value == "auto" || *value == "on" || *value == "off")) {
+        config.bluetoothPassthrough = *value;
+    }
     config.wiiAccelOffsetX = FindConfigValue<double>(document, "controller", "wii_accel_offset_x");
     config.wiiAccelOffsetY = FindConfigValue<double>(document, "controller", "wii_accel_offset_y");
     config.wiiAccelOffsetZ = FindConfigValue<double>(document, "controller", "wii_accel_offset_z");
@@ -733,6 +786,13 @@ inline RuntimeUserConfig& Mutable() {
 inline constexpr std::array<std::string_view, 12> kControllerButtonKeys = {
     "a", "b", "x", "y", "start", "z", "l", "r", "up", "down", "left", "right",
 };
+
+inline constexpr std::array<std::string_view, 3> kRemoteActionKeys = {"tilt_left", "tilt_right", "shake"};
+
+inline const std::optional<std::string>& RemoteAction(size_t index) {
+    static const std::optional<std::string> empty;
+    return index < Get().remoteActions.size() ? Get().remoteActions[index] : empty;
+}
 
 inline const std::optional<std::string>& ControllerButton(size_t index) {
     static const std::optional<std::string> empty;
@@ -899,11 +959,23 @@ inline bool DiscLanguage(const std::string& code) {
     return code == "en" || code == "es" || code == "fr";
 }
 
-// A language pack: Languages/<code> beside Config.toml, shaped like the disc's files/US/EngUS (Font,
-// Layout, Message, staffroll), or holding one folder that is. Only files the disc has are used.
+inline std::filesystem::path ResolvedDvdRoot();
+
+// Italian can live in the EU tree of the selected game dump. Keep the user-data path as a fallback
+// for existing installs and for other language packs.
 inline std::filesystem::path LanguagePackDir(const std::string& code) {
-    std::filesystem::path dir = ResolveConfigPath().parent_path() / "Languages" / PathFromUtf8(code);
     std::error_code ec;
+    if (code == "it") {
+        const std::filesystem::path gamePack = ResolvedDvdRoot() / "files" / "EU" / "ItaEU";
+        if (std::filesystem::is_directory(gamePack / "Message", ec)) {
+            return gamePack;
+        }
+    }
+
+    // Languages/<code> beside Config.toml, shaped like the disc's files/US/EngUS (Font, Layout,
+    // Message, staffroll), or holding one folder that is. Only files the disc has are used.
+    std::filesystem::path dir = ResolveConfigPath().parent_path() / "Languages" / PathFromUtf8(code);
+    ec.clear();
     if (!std::filesystem::is_directory(dir / "Message", ec)) {
         for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
             if (entry.is_directory(ec) && std::filesystem::is_directory(entry.path() / "Message", ec)) {
@@ -1024,6 +1096,15 @@ inline bool SetVSync(bool value) {
     return WriteSetting("video", "vsync", value ? "true" : "false");
 }
 
+inline bool BatterySaver(bool fallback = false) {
+    return Get().batterySaver.value_or(fallback);
+}
+
+inline bool SetBatterySaver(bool value) {
+    Mutable().batterySaver = value;
+    return WriteSetting("video", "battery_saver", value ? "true" : "false");
+}
+
 inline bool SetShowFps(bool value) {
     Mutable().showFps = value;
     return WriteSetting("video", "show_fps", value ? "true" : "false");
@@ -1044,6 +1125,14 @@ inline bool SetControllerButton(size_t index, std::string value) {
     return WriteSetting("controller", kControllerButtonKeys[index], FormatString(value));
 }
 
+inline bool SetRemoteAction(size_t index, std::string value) {
+    if (index >= kRemoteActionKeys.size()) {
+        return false;
+    }
+    Mutable().remoteActions[index] = value;
+    return WriteSetting("controller", kRemoteActionKeys[index], FormatString(value));
+}
+
 inline std::string ControllerExpression(const std::string& key) {
     const auto it = Get().controllerExpressions.find(key);
     return it == Get().controllerExpressions.end() ? std::string() : it->second;
@@ -1062,6 +1151,40 @@ inline std::string KeyboardBinding(const std::string& key) {
 inline bool SetKeyboardBinding(const std::string& key, const std::string& value) {
     Mutable().keyboardBindings[key] = value;
     return WriteSetting("keyboard", key, FormatString(value));
+}
+
+// [["Left Ctrl", "X"], ["Z", "Mouse L"]] (or [] for none), on one line as WriteSetting needs.
+inline std::string FormatCombos(const std::vector<std::vector<std::string>>& combos) {
+    std::string text = "[";
+    for (size_t i = 0; i < combos.size(); ++i) {
+        text += i == 0 ? "[" : ", [";
+        for (size_t j = 0; j < combos[i].size(); ++j) {
+            text += (j == 0 ? "" : ", ") + FormatString(combos[i][j]);
+        }
+        text += "]";
+    }
+    return text + "]";
+}
+
+// The combinations of an action ("jump"), [keyboard] or [controller] "<action>_combos".
+inline std::vector<std::vector<std::string>> KeyboardCombos(const std::string& action) {
+    const auto it = Get().keyboardCombos.find(action + "_combos");
+    return it == Get().keyboardCombos.end() ? std::vector<std::vector<std::string>>() : it->second;
+}
+
+inline bool SetKeyboardCombos(const std::string& action, const std::vector<std::vector<std::string>>& combos) {
+    Mutable().keyboardCombos[action + "_combos"] = combos;
+    return WriteSetting("keyboard", action + "_combos", FormatCombos(combos));
+}
+
+inline std::vector<std::vector<std::string>> ControllerCombos(const std::string& action) {
+    const auto it = Get().controllerCombos.find(action + "_combos");
+    return it == Get().controllerCombos.end() ? std::vector<std::vector<std::string>>() : it->second;
+}
+
+inline bool SetControllerCombos(const std::string& action, const std::vector<std::vector<std::string>>& combos) {
+    Mutable().controllerCombos[action + "_combos"] = combos;
+    return WriteSetting("controller", action + "_combos", FormatCombos(combos));
 }
 
 inline bool RumbleEnabled(bool fallback = true) {
@@ -1251,6 +1374,22 @@ inline bool SetWiiContinuousScanEnabled(bool value) {
     return WriteSetting("controller", "wii_continuous_scan", value ? "true" : "false");
 }
 
+// Bluetooth passthrough: "auto", "on" or "off" (bt_passthrough.h). Takes effect on the next start. Off by
+// default for 0.5.0: nobody has tried it with a real adapter yet, and with it on, the keyboard and
+// controllers don't drive the game.
+inline std::string BluetoothPassthroughMode() {
+    return Get().bluetoothPassthrough.value_or("off");
+}
+
+// Persists the Bluetooth passthrough setting ("auto", "on" or "off").
+inline bool SetBluetoothPassthroughMode(const std::string& value) {
+    if (value != "auto" && value != "on" && value != "off") {
+        return false;
+    }
+    Mutable().bluetoothPassthrough = value;
+    return WriteSetting("input", "bluetooth_passthrough", FormatString(value));
+}
+
 // Wii Remote accelerometer zero-point correction (g, SDL sensor frame); all zero
 // when the remote has not been calibrated.
 inline std::array<double, 3> WiiAccelOffset() {
@@ -1306,6 +1445,12 @@ inline bool ShowFps(bool fallback = true) {
 
 inline bool TextureReplacements(bool fallback = false) {
     return Get().textureReplacements.value_or(fallback);
+}
+
+// The Mods tab's HD Texture Pack On / Off (aurora_set_texture_replacements makes it take effect at once).
+inline bool SetTextureReplacements(bool value) {
+    Mutable().textureReplacements = value;
+    return WriteSetting("video", "texture_replacements", value ? "true" : "false");
 }
 
 // Dumping only produces the names a replacement would need, so main.cpp

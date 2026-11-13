@@ -71,11 +71,16 @@ final class AppFiles {
         return hasGameData(context, newer) && gameProblem(gameDir(context, newer), newer) == null;
     }
 
+    /**
+     * What the player is told when an import, or the game imported before, lacks any of the files the
+     * game needs (GameFileList): instead of starting and stopping somewhere in the boot.
+     */
+    static final String INCOMPLETE = "The folder doesn't include all required files.";
+
     /** Why the extracted game at `root` can't be played, or null when it can. */
     static String gameProblem(File root, boolean newer) {
         if (!isGameRoot(root)) {
-            return Lang.t("That isn't an extracted game: it needs the files and sys folders Dolphin's "
-                    + "Extract Entire Disc makes.");
+            return Lang.t(INCOMPLETE);
         }
         final byte[] header = new byte[8];
         try (InputStream in = new FileInputStream(new File(root, "sys/boot.bin"))) {
@@ -83,15 +88,38 @@ final class AppFiles {
                 return Lang.t("Its sys/boot.bin is too short, so the game can't be identified.");
             }
         } catch (IOException e) {
-            return Lang.t("It has no sys/boot.bin, so the game can't be identified.");
+            return Lang.t(INCOMPLETE);
         }
-        final String problem = headerProblem(header, newer);
+        String problem = headerProblem(header, newer);
+        if (problem == null && missingFile(root) != null) {
+            problem = Lang.t(INCOMPLETE);
+        }
         // Newer's code is translated into its module, so only the version it came from runs
         // (runtime/src/product/base_product.cpp names the same file and size).
         if (problem == null && newer && new File(root, "files/NewerRes/DLCodeUS_1.bin").length() != NEWER_CODE_SIZE) {
             return Lang.t("That is another version of Newer Super Mario Bros. Wii. This port runs v1.30 for the USA.");
         }
         return problem != null ? problem : moduleProblem(root);
+    }
+
+    /** missingFile's answers, by folder and its sys/fst.bin's size and time: a folder is listed once. */
+    private static final java.util.Map<String, String> MISSING = new java.util.HashMap<>();
+
+    /** The first file the game needs that `root` doesn't have (GameFileList), or null when none. */
+    static synchronized String missingFile(File root) {
+        final File fst = new File(root, "sys/fst.bin");
+        final String key = root.getAbsolutePath() + ":" + fst.length() + ":" + fst.lastModified();
+        if (MISSING.containsKey(key)) {
+            return MISSING.get(key);
+        }
+        final java.util.List<String> missing = GameFileList.missing(root, Integer.MAX_VALUE);
+        final String first = missing.isEmpty() ? null : missing.get(0);
+        if (first != null) {
+            android.util.Log.w("NSMBW", "game folder " + root + ": " + missing.size()
+                    + " required file(s) missing, the first " + first);
+        }
+        MISSING.put(key, first);
+        return first;
     }
 
     /**
@@ -143,6 +171,69 @@ final class AppFiles {
         return null;
     }
 
+    /**
+     * Each retail disc and its main.dol's SHA-256, as projects/nsmbw/variants/variants.toml pins them
+     * (runtime/src/game_folder.cpp has the same list). The Japanese disc (SMNJ01) has none pinned yet.
+     */
+    private static final String[][] RETAIL_DOLS = {
+        {"SMNE01", "6d755ec24c395fee600a856a85785e0e99c0b7ecb680d573a6cdd1aa6f7beee7"},  // USA rev 1
+        {"SMNP01", "51a2a8b0941e8fe3390404a9b2094e3c78246a999efa58fcc8a7c534c11d7b5b"},  // Europe rev 1
+    };
+    /** The last retailDisc answer, for that main.dol's path, size and time: hashed once per import. */
+    private static String retailKey;
+    private static boolean retailAnswer;
+
+    /**
+     * Whether the extracted game at `root` is the original, unchanged: a retail disc ID and the
+     * main.dol it came with. A modded disc (Newer and the like) isn't. Reads main.dol (about 4 MB):
+     * call it off the UI thread.
+     */
+    static synchronized boolean retailDisc(File root) {
+        final File dol = new File(root, "sys/main.dol");
+        final String key = dol.getAbsolutePath() + ":" + dol.length() + ":" + dol.lastModified();
+        if (key.equals(retailKey)) {
+            return retailAnswer;
+        }
+        boolean retail = false;
+        final byte[] header = new byte[6];
+        try (InputStream in = new FileInputStream(new File(root, "sys/boot.bin"))) {
+            if (readFully(in, header) == header.length) {
+                final String id = new String(header, 0, 6, StandardCharsets.US_ASCII);
+                for (String[] pinned : RETAIL_DOLS) {
+                    if (pinned[0].equals(id)) {
+                        retail = pinned[1].equals(sha256(dol));
+                    }
+                }
+            }
+        } catch (IOException e) {
+            retail = false;
+        }
+        retailKey = key;
+        retailAnswer = retail;
+        return retail;
+    }
+
+    private static String sha256(File file) throws IOException {
+        final java.security.MessageDigest digest;
+        try {
+            digest = java.security.MessageDigest.getInstance("SHA-256");
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IOException(e);
+        }
+        try (InputStream in = new FileInputStream(file)) {
+            final byte[] buffer = new byte[1 << 16];
+            int read;
+            while ((read = in.read(buffer)) > 0) {
+                digest.update(buffer, 0, read);
+            }
+        }
+        final StringBuilder hex = new StringBuilder();
+        for (byte b : digest.digest()) {
+            hex.append(String.format(Locale.ROOT, "%02x", b & 0xFF));
+        }
+        return hex.toString();
+    }
+
     static int readFully(InputStream in, byte[] buffer) throws IOException {
         int total = 0;
         while (total < buffer.length) {
@@ -192,17 +283,19 @@ final class AppFiles {
                 + "aspect_mode = " + settings.aspectMode() + "\n"
                 + "gpu_compat = " + settings.gpuCompat() + "\n"
                 + "resolution_multiplier = " + String.format(Locale.ROOT, "%.2f", settings.resolutionScale()) + "\n"
-                + "frame_interpolation_fps = 0\n"
+                + "frame_interpolation_fps = " + settings.frameInterpolationFps() + "\n"
                 + "graphics_api = \"" + settings.graphicsApi() + "\"\n"
                 + "skip_unready_pipelines = true\n"
                 + "disable_copy_filter = true\n"
                 + "show_fps = false\n"
                 + "spinning_coins = " + settings.spinningCoins() + "\n"
+                + "disabled_post_processing_paths = " + (settings.depthBlur() ? 0 : 16) + "\n"
                 + "frame_graph = " + settings.performanceMonitor() + "\n"
                 + "vsync = " + settings.vsync() + "\n"
+                + "battery_saver = " + settings.batterySaver() + "\n"
                 + "frame_graph_size = " + settings.frameGraphSize() + "\n"
                 + "touch_controls = " + settings.touchControls() + "\n"
-                + "texture_replacements = false\n"
+                + "texture_replacements = " + settings.textureReplacements() + "\n"
                 + "texture_dumps = false\n"
                 + (hasTable(config, "audio") ? "" : "\n[audio]\n"
                 + "volume = 1.0\n"

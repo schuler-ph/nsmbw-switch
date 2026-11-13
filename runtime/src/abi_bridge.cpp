@@ -262,15 +262,11 @@ bool VerifyHotTlsAccessors() {
     // &variable is the compiler's own thread_local address (on Switch through __aarch64_read_tp);
     // the accessor is the inline tpidrro_el0 + tprel path of isa/ppc_isa_tls.h.
     const Check checks[] = {
-        {"g_currentCpuContext", &CurrentCpuContextTls(), &g_currentCpuContext},
-        {"RecompMod::g_currentTranslatedExecutionAddress",
-         &RecompMod::CurrentTranslatedExecutionAddressTls(),
-         &RecompMod::g_currentTranslatedExecutionAddress},
+        {"g_guestThreadState", &GuestThreadStateTls(), &g_guestThreadState},
         {"g_mkwHostNiActive", &MkwHostNiActiveTls(), &g_mkwHostNiActive},
         {"g_mkwNiFlushThreshold", &MkwNiFlushThresholdTls(), &g_mkwNiFlushThreshold},
         {"g_indirectResolvedDispatchMemo", &IndirectResolvedDispatchMemoTls(),
          &g_indirectResolvedDispatchMemo},
-        {"g_indirectRawDispatchMemo", &IndirectRawDispatchMemoTls(), &g_indirectRawDispatchMemo},
     };
     for (const Check& check : checks) {
         if (check.accessor != check.variable) {
@@ -302,9 +298,6 @@ void RegisterStaticIndirectDispatchTable(const StaticIndirectDispatchTable* tabl
         std::abort();
     }
     registered = table;
-    // Mirror into the header-visible atomic under the same lock, so the
-    // inlined miss path and this owning static can never disagree.
-    g_publishedStaticIndirectDispatchTable.store(table, std::memory_order_release);
 }
 
 void RegisterBulkTranslatedFunctions(const BulkTranslatedFunctionRecord* records, size_t count) {
@@ -396,6 +389,7 @@ void TranslatedFunctionRegistry::Finalize() {
             auto& addressEntries = AddressEntries();
             addressEntries.clear();
             addressEntries.rehash(0);
+            BuildFastRawTableLocked();
             RegistryFrozen().store(true, std::memory_order_release);
             lookupPublished_.store(true, std::memory_order_release);
         }
@@ -424,19 +418,67 @@ const TranslatedFunctionInfo* TranslatedFunctionRegistry::FindByAddressPtrSlow(u
     return nullptr;
 }
 
-const RawDispatchRecord* TranslatedFunctionRegistry::FindRawByAddressPtrSlow(uint32_t address) {
-    if (!RegistryFrozen().load(std::memory_order_acquire)) {
-        return nullptr;
+namespace {
+FastRawDispatchTable g_fastRawTable;
+
+// Puts `record` in the indirect-call table, replacing what that address had.
+void PutFastRaw(FastRawDispatchTable& table, const RawDispatchRecord& record) {
+    if (record.address == 0) {
+        return;
     }
-    if (const auto* generated = FindStaticIndirectDispatchEntry(GeneratedIndirectDispatchTable(), address)) {
-        return generated;
+    uint32_t index = ((record.address >> 2) * 2654435761u) >> table.shift;
+    while (table.slots[index].address != 0 && table.slots[index].address != record.address) {
+        index = (index + 1) & table.mask;
     }
-    const auto& entries = DynamicRawDispatchEntries();
-    const auto it = std::lower_bound(entries.begin(), entries.end(), address,
-        [](const RawDispatchRecord& entry, uint32_t target) {
-            return entry.address < target;
-        });
-    return it != entries.end() && it->address == address ? &*it : nullptr;
+    FastRawDispatchSlot& slot = table.slots[index];
+    slot.fprMaskAndFlags = (record.nonvolatileFprWriteMask & kPpcAllNonvolatileFprMask) |
+                           (record.preserveNonvolatileGprs ? kFastRawPreserveGprsFlag : 0u);
+    slot.entry = record.entry;
+    slot.address = record.address;
+}
+} // namespace
+
+void TranslatedFunctionRegistry::BuildFastRawTableLocked() {
+    // What the old memo-miss path resolved, address by address: the generated table first, then
+    // the dynamically registered records (natives; never at a generated address, see
+    // ValidateGeneratedIndirectDispatchLocked), then the runtime redirects over both.
+    const auto* generated = GeneratedIndirectDispatchTable();
+    const auto& dynamic = DynamicRawDispatchEntries();
+    const size_t count = (generated ? generated->entryCount : 0) + dynamic.size() + runtimeRedirectCount_;
+    // At most half full: a hit is about one probe, and a probe run rarely leaves its cache line.
+    uint32_t bits = 10;
+    while ((size_t{1} << bits) < count * 2) {
+        ++bits;
+    }
+    auto& table = g_fastRawTable;
+    table.slots = new FastRawDispatchSlot[size_t{1} << bits]();  // lives as long as the process
+    table.mask = (1u << bits) - 1u;
+    table.shift = 32u - bits;
+    for (size_t i = 0; generated && i < generated->entryCount; ++i) {
+        PutFastRaw(table, generated->entries[i]);
+    }
+    for (const auto& record : dynamic) {
+        if (!FindStaticIndirectDispatchEntry(generated, record.address)) {
+            PutFastRaw(table, record);
+        }
+    }
+    for (size_t i = 0; i < runtimeRedirectCount_; ++i) {
+        PutFastRaw(table, *runtimeRedirects_[i]);
+    }
+    fastRawTable_.store(&table, std::memory_order_release);
+    RT_LOG(RT_TAG_RUNTIME) << "indirect-call table: " << count << " records in " << (size_t{1} << bits)
+                           << " slots" << std::endl;
+}
+
+void TranslatedFunctionRegistry::SetRuntimeRedirect(const RawDispatchRecord* record) noexcept {
+    std::lock_guard<std::mutex> lock(RegistryMutex());
+    if (runtimeRedirectCount_ < kMaxRuntimeRedirects) {
+        runtimeRedirects_[runtimeRedirectCount_++] = record;
+        // Already finalized: the table has room (built at most half full), and no guest code runs yet.
+        if (fastRawTable_.load(std::memory_order_relaxed) != nullptr) {
+            PutFastRaw(g_fastRawTable, *record);
+        }
+    }
 }
 
 std::optional<TranslatedFunctionInfo> TranslatedFunctionRegistry::FindByHostAddress(uintptr_t hostAddr) {

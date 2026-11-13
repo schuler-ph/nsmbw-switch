@@ -68,6 +68,7 @@
 #include "netplay_ui.h"
 #include "netplay_start.h"
 #include "netplay_session.h"
+#include "bt_passthrough.h"
 #include "frame_input.h"
 #include "det_clock.h"
 #include "game_folder.h"
@@ -1487,6 +1488,7 @@ int RuntimeMain(int argc, char** argv) {
             ShutdownProcessTranscript();
             return 0;
         }
+        GameFolder::RetailDisc();  // main.dol hashed once here, not when the Settings window first asks
 #if defined(__ANDROID__)
         // Determinism testing on a phone: debug.nsmbw.det=1 turns the lockstep timing on,
         // debug.nsmbw.dethash / detdump set NSMBW_DET_HASH / NSMBW_DET_DUMP (det_hash.h) and
@@ -1552,6 +1554,9 @@ int RuntimeMain(int argc, char** argv) {
             }
             NetplaySession::SetStallHandler(&NetplayUi::OnSessionStall);
         }
+        // Bluetooth passthrough: look for a USB Bluetooth adapter while the graphics start up. Knows by
+        // now whether this run is a LAN session or deterministic, where it stays off.
+        BtPassthrough::StartProbe();
         if (RuntimeConfigFile::DiscordPresenceEnabled()) {
             DiscordPresence::Initialize(RuntimeConfigFile::DiscordClientId(),
                                         RuntimeProduct::Active().displayName.data());
@@ -1752,6 +1757,7 @@ int RuntimeMain(int argc, char** argv) {
                   << " native=" << auroraInfo.windowSize.native_fb_width << "x"
                   << auroraInfo.windowSize.native_fb_height << std::endl;
         g_auroraInitialized.store(true, std::memory_order_release);
+        settings_overlay::RunShaderLoadingScreen();
 
         auto entry = ResolveEntry();
         InitializePersistentCpuContext();

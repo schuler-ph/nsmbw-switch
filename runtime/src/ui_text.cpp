@@ -9,12 +9,13 @@
 namespace UiText {
 namespace {
 
-// 0 English, 1 Italian. The disc's Spanish and French have no menu translations yet. The letters
-// with a grave accent that no disc font has are made at boot (FontGraves).
+// 0 English, 1 Italian, 2 Spanish, 3 French. Spanish and French have only the newer messages so far (the game
+// folder chooser, the Mods tab, the Display and Graphics tabs' newer rows, Bluetooth passthrough); the rest stay
+// English there. The letters with a grave accent that no disc font has are made at boot (FontGraves).
 std::atomic<int> g_language{-1};
 
 int LanguageIndex(const std::string& code) {
-    return code == "it" ? 1 : 0;
+    return code == "it" ? 1 : code == "es" ? 2 : code == "fr" ? 3 : 0;
 }
 
 using Table = std::unordered_map<std::string_view, const char*>;
@@ -33,19 +34,30 @@ const Table& Italian() {
         {"Couch", "Locale"},
         {"LAN", "LAN"},
         {"OK", "OK"},
-        // settings tabs
+        // settings tabs, and the help line while the cursor is on them
+        {"How the game is drawn and shown on your screen.", "Come il gioco viene disegnato e mostrato sullo schermo."},
+        {"How loud the game's music and sounds are.", "Il volume della musica e dei suoni del gioco."},
+        {"The on-screen controls and how tilting works.", "I controlli su schermo e come funziona l'inclinazione."},
+        {"Which controller buttons play the Wii Remote's buttons.",
+         "Quali pulsanti del controller fanno da pulsanti del Wii Remote."},
+        {"Which keys play the Wii Remote's buttons.", "Quali tasti fanno da pulsanti del Wii Remote."},
+        {"Optional helpers; LAN play always keeps the game's own rules.",
+         "Aiuti facoltativi; in LAN valgono sempre le regole normali del gioco."},
+        {"The language of the game's text and these menus.", "La lingua dei testi del gioco e di questi menu."},
         {"Video", "Video"},
         {"Audio", "Audio"},
         {"Controller", "Controller"},
         {"Keybinds", "Tasti"},
         {"Language", "Lingua"},
         {"Gameplay", "Partita"},
+        {"Mods", "Mod"},
+        {"Mods that change the game.", "Mod che cambiano il gioco."},
+        {"Coming Soon!", "Prossimamente!"},
         // Gameplay
         {"No Time Limit", "Tempo infinito"},
         {"Infinite Lives", "Vite infinite"},
         {"The course timer stands still: take your time.", "Il tempo del livello si ferma: fai con calma."},
         {"A miss costs no life.", "Perdere non costa vite."},
-        {"These keep the game's own rules in LAN play.", "In LAN valgono le regole normali del gioco."},
         {"Power-Up", "Potenziamento"},
         {"Small", "Piccolo"},
         {"Super Mushroom", "Superfungo"},
@@ -87,6 +99,12 @@ const Table& Italian() {
         {"V-Sync", "V-Sync"},
         {"Performance Monitor", "Monitor prestazioni"},
         {"Spinning Coins", "Monete rotanti"},
+        {"Depth Blur", "Sfocatura"},
+        {"The blur and heat haze of desert, beach, water and lava areas.",
+         "Sfocatura e foschia di deserto, spiaggia, acqua e lava."},
+        {"Battery Saver", "Risparmio batteria"},
+        {"Runs at 30FPS instead of 60FPS; pauses during LAN Play.",
+         "Gira a 30FPS invece di 60FPS; si sospende nel gioco in LAN."},
         {"The screen's own resolution, filling the whole screen.",
          "La risoluzione dello schermo, a tutto schermo."},
         {"Rendered at this many lines, then scaled to the screen.",
@@ -97,12 +115,14 @@ const Table& Italian() {
          "Senza bordi: una finestra che copre tutto lo schermo (F11)."},
         {"Exclusive: the game takes over the display.", "Esclusivo: il gioco prende il controllo dello schermo."},
         {"Off: the game plays in a window.", "No: il gioco è in una finestra."},
-        {"The best this device has. ", "Il migliore per questo dispositivo. "},
-        {"Takes effect at the next start. Now: ", "Si applica al prossimo avvio. Ora: "},
-        {"FPS and each frame's time, top right. Left and right: its size.",
-         "FPS e tempo di ogni frame, in alto a destra. Sinistra e destra: dimensione."},
-        {"Animated coins and blocks. Off saves a little GPU work.",
-         "Monete e blocchi animati. Disattivato alleggerisce la GPU."},
+        {"Picks the best graphics API this device has, from the next start (now %s).",
+         "Sceglie la migliore API grafica del dispositivo, dal prossimo avvio (ora %s)."},
+        {"Draws with this graphics API from the next start (now %s).",
+         "Disegna con questa API grafica dal prossimo avvio (ora %s)."},
+        {"Shows the FPS and each frame's time at the top right; left and right set its size.",
+         "Mostra FPS e tempo di ogni frame in alto a destra; sinistra e destra ne cambiano la dimensione."},
+        {"Animates coins and blocks; off saves a little GPU work.",
+         "Anima monete e blocchi; disattivato alleggerisce un po' la GPU."},
         {"No tearing: frames wait for the display, the game keeps its pace.",
          "Niente tearing: i frame aspettano lo schermo, il gioco mantiene il ritmo."},
         // Audio
@@ -112,7 +132,8 @@ const Table& Italian() {
         {"The volume of everything.", "Il volume di tutto."},
         {"The background music.", "La musica di sottofondo."},
         {"Jumps, coins, enemies and the rest.", "Salti, monete, nemici e il resto."},
-        {"Left and right change the selected volume.", "Sinistra e destra cambiano il volume scelto."},
+        {"Menu Sounds", "Suoni dei menu"},
+        {"The menus' cursor, select and back sounds.", "Cursore, scelta e indietro dei menu."},
         // Keybinds / Controller
         {"Up", "Su"},
         {"Down", "Giù"},
@@ -134,13 +155,48 @@ const Table& Italian() {
         {"Press the new key or mouse button (Esc cancels).",
          "Premi il nuovo tasto o pulsante del mouse (Esc annulla)."},
         {"Press the new button (Esc cancels).", "Premi il nuovo pulsante (Esc annulla)."},
+        {"Hold a button, or 2 or 3 together, then let go. Esc cancels.",
+         "Tieni un pulsante, o 2 o 3 insieme, poi lascia. Esc annulla."},
+        {"Hold a key, or 2 or 3 together, then let go. Esc cancels, Delete clears.",
+         "Tieni un tasto, o 2 o 3 insieme, poi lascia. Esc annulla, Canc cancella."},
+        {"Press a button, pull a trigger, or move a stick. Esc cancels, Delete clears.",
+         "Premi un pulsante, tira un grilletto o muovi una levetta. Esc annulla, Canc cancella."},
         {"Space Smart Spin", "Giro intelligente"},
         {"Reverse Tilt", "Inverti inclinazione"},
         {"Touch Controls", "Comandi touch"},
         {"Mouse as Gyro", "Mouse giroscopio"},
         {"Reset Defaults", "Ripristina"},
+        {"The D-pad's up: climb vines, and go through doors and pipes.",
+         "Su della croce: arrampicati e passa da porte e tubi."},
+        {"The D-pad's down: crouch, and ground-pound in the air.", "Giù della croce: abbassati, e schianto a terra in aria."},
+        {"The D-pad's left: walk left, and move a menu's cursor.",
+         "Sinistra della croce: cammina a sinistra e muovi il cursore dei menu."},
+        {"The D-pad's right: walk right, and move a menu's cursor.",
+         "Destra della croce: cammina a destra e muovi il cursore dei menu."},
+        {"The 2 button: jump and swim, and choose in menus.", "Il pulsante 2: salta e nuota, e scegli nei menu."},
+        {"The 1 button: run, throw fireballs, and go back in menus.",
+         "Il pulsante 1: corri, lancia palle di fuoco e torna indietro nei menu."},
+        {"The A button: view the whole world map.", "Il pulsante A: guarda tutta la mappa del mondo."},
+        {"Shakes the Wii Remote: a spin jump, or picking up and throwing.",
+         "Scuote il Wii Remote: salto rotante, o prendere e lanciare."},
+        {"Tilts the Wii Remote left, for the platforms that tilt.",
+         "Inclina il Wii Remote a sinistra, per le piattaforme inclinabili."},
+        {"Tilts the Wii Remote right, for the platforms that tilt.",
+         "Inclina il Wii Remote a destra, per le piattaforme inclinabili."},
+        {"The + button: pause a course, or open the world map's menu.",
+         "Il pulsante +: metti in pausa un livello o apri il menu della mappa."},
+        {"The - button: open Select a World on the world map.", "Il pulsante -: apri la scelta del mondo sulla mappa."},
+        {"With Space as a Jump key, Space in the air does a spin.",
+         "Se Spazio è un tasto Salta, Spazio in aria fa una rotazione."},
+        {"Platforms you tilt lean the way the stick or phone goes.",
+         "Le piattaforme si inclinano dove va la levetta o il telefono."},
+        {"Shows the on-screen Wii Remote, for playing by touch.", "Mostra il Wii Remote su schermo, per giocare col touch."},
+        {"Moving the mouse tilts the remote; moving it quickly shakes it.",
+         "Muovere il mouse inclina il telecomando; muoverlo veloce lo scuote."},
+        {"Puts every controller button back the way it started.", "Riporta ogni pulsante del controller com'era all'inizio."},
+        {"Puts every key back the way it started.", "Riporta ogni tasto com'era all'inizio."},
         // Language
-        {"The language of the game's text and menus.", "La lingua dei testi e dei menu del gioco."},
+        {"Shows the game's text and these menus in %s.", "Mostra i testi del gioco e questi menu in %s."},
         {"The game's own text needs an Italian language pack.",
          "Per i testi del gioco serve un pacchetto della lingua italiana."},
         // LAN
@@ -200,6 +256,152 @@ const Table& Italian() {
         {"The download was damaged. Try again.", "Il download è danneggiato. Riprova."},
         {"The game's folder can't be written to.", "Impossibile scrivere nella cartella del gioco."},
         {"Update from the app's start screen instead.", "Aggiorna dalla schermata iniziale dell'app."},
+        // the game folder chooser (game_folder.cpp)
+        {"The folder doesn't include all required files.", "La cartella non include tutti i file necessari."},
+        // Mods: the HD Texture Pack
+        {"HD Texture Pack", "Pacchetto texture HD"},
+        {"Download", "Scarica"},
+        {"Try Again", "Riprova"},
+        {"More Coming Soon!", "Altre mod in arrivo!"},
+        {"Downloading from the pack's own download page.", "Download dalla pagina ufficiale del pacchetto."},
+        {"Unpacking the textures.", "Estrazione delle texture."},
+        {"HD textures by Bighead and friends: a 23 MB download.", "Texture HD di Bighead e amici: un download di 23 MB."},
+        {"HD textures by Bighead, razius, jaco8, CDAMJC and Amon1995.",
+         "Texture HD di Bighead, razius, jaco8, CDAMJC e Amon1995."},
+        {"Off: the game's own textures.", "No: le texture originali del gioco."},
+        {"The download failed. Check your connection and try again.",
+         "Download non riuscito. Controlla la connessione e riprova."},
+        {"Couldn't install the pack: is there room on the drive?",
+         "Impossibile installare il pacchetto: c'è spazio sul disco?"},
+        // Video: Frame Interpolation
+        {"Frame Interpolation", "Interpolazione fotogrammi"},
+        {"Draws frames in between; 60 smooths Battery Saver's 30FPS back to 60.",
+         "Disegna fotogrammi intermedi; 60 riporta a 60 i 30FPS del Risparmio batteria."},
+        {"Draws frames in between for smoother motion on screens above 60Hz.",
+         "Disegna fotogrammi intermedi per un movimento più fluido sugli schermi oltre 60Hz."},
+        // Video: Resolution and Aspect Ratio
+        {"Aspect Ratio", "Proporzioni"},
+        {"Original 4:3", "4:3 originale"},
+        {"The screen's own resolution.", "La risoluzione dello schermo."},
+        {"The Wii's original 4:3 picture.", "L'immagine 4:3 originale del Wii."},
+        {"The game's 16:9 widescreen picture.", "L'immagine 16:9 del gioco."},
+        {"Switching between 4:3 and widescreen takes effect after a restart.",
+         "Il passaggio tra 4:3 e 16:9 vale dal prossimo avvio."},
+        // Display / Graphics tabs; Bluetooth passthrough (Gameplay)
+        {"Display", "Schermo"},
+        {"Graphics", "Grafica"},
+        {"How the game is shown on your screen.", "Come il gioco viene mostrato sullo schermo."},
+        {"How the game is drawn, and how smoothly it moves.", "Come il gioco viene disegnato, e quanto è fluido."},
+        {"Bluetooth Passthrough", "Bluetooth diretto"},
+        {"Auto", "Automatico"},
+        {"Pair Wii Remotes", "Associa Wii Remote"},
+        {"Pair", "Associa"},
+        {"Real Wii Remotes through a USB Bluetooth adapter, speaker included. Takes effect after a restart.",
+         "Wii Remote veri tramite un adattatore Bluetooth USB, altoparlante incluso. Vale dal prossimo avvio."},
+        {"Then press the red SYNC button on each Wii Remote.", "Poi premi il tasto rosso SYNC su ogni Wii Remote."},
+        {"In use: %s", "In uso: %s"},
+        {"Not in use: %s", "Non in uso: %s"},
+    };
+    return table;
+}
+
+// Spanish and French: only the newer messages so far (see the note at the top).
+const Table& Spanish() {
+    static const Table table = {
+        // the game folder chooser (game_folder.cpp)
+        {"The folder doesn't include all required files.", "La carpeta no incluye todos los archivos necesarios."},
+        {"HD Texture Pack", "Pack de texturas HD"},
+        {"Download", "Descargar"},
+        {"Try Again", "Reintentar"},
+        {"Installing...", "Instalando..."},
+        {"More Coming Soon!", "¡Pronto habrá más!"},
+        {"Downloading from the pack's own download page.", "Descargando desde la página de descarga del pack."},
+        {"Unpacking the textures.", "Descomprimiendo las texturas."},
+        {"HD textures by Bighead and friends: a 23 MB download.",
+         "Texturas HD de Bighead y compañía: una descarga de 23 MB."},
+        {"HD textures by Bighead, razius, jaco8, CDAMJC and Amon1995.",
+         "Texturas HD de Bighead, razius, jaco8, CDAMJC y Amon1995."},
+        {"Off: the game's own textures.", "Desactivado: las texturas originales del juego."},
+        {"The download failed. Check your connection and try again.",
+         "La descarga falló. Comprueba tu conexión y vuelve a intentarlo."},
+        {"The download was damaged. Try again.", "La descarga está dañada. Vuelve a intentarlo."},
+        {"Couldn't install the pack: is there room on the drive?", "No se pudo instalar el pack: ¿hay espacio en el disco?"},
+        {"Frame Interpolation", "Interpolación de fotogramas"},
+        {"Draws frames in between; 60 smooths Battery Saver's 30FPS back to 60.",
+         "Dibuja fotogramas intermedios; 60 devuelve a 60 los 30FPS del Ahorro de batería."},
+        {"Draws frames in between for smoother motion on screens above 60Hz.",
+         "Dibuja fotogramas intermedios para un movimiento más fluido en pantallas de más de 60Hz."},
+        {"Aspect Ratio", "Relación de aspecto"},
+        {"Original 4:3", "4:3 original"},
+        {"The screen's own resolution.", "La resolución de la pantalla."},
+        {"The Wii's original 4:3 picture.", "La imagen 4:3 original de Wii."},
+        {"The game's 16:9 widescreen picture.", "La imagen panorámica 16:9 del juego."},
+        {"Switching between 4:3 and widescreen takes effect after a restart.",
+         "Cambiar entre 4:3 y panorámico se aplica al reiniciar el juego."},
+        {"Display", "Pantalla"},
+        {"Graphics", "Gráficos"},
+        {"How the game is shown on your screen.", "Cómo se muestra el juego en tu pantalla."},
+        {"How the game is drawn, and how smoothly it moves.", "Cómo se dibuja el juego, y con qué fluidez se mueve."},
+        {"Bluetooth Passthrough", "Bluetooth directo"},
+        {"Auto", "Automático"},
+        {"Pair Wii Remotes", "Vincular Wii Remotes"},
+        {"Pair", "Vincular"},
+        {"Real Wii Remotes through a USB Bluetooth adapter, speaker included. Takes effect after a restart.",
+         "Wii Remotes reales con un adaptador Bluetooth USB, altavoz incluido. Se aplica al reiniciar el juego."},
+        {"Then press the red SYNC button on each Wii Remote.", "Después pulsa el botón rojo SYNC de cada Wii Remote."},
+        {"In use: %s", "En uso: %s"},
+        {"Not in use: %s", "Sin usar: %s"},
+    };
+    return table;
+}
+
+const Table& French() {
+    static const Table table = {
+        // the game folder chooser (game_folder.cpp)
+        {"The folder doesn't include all required files.", "Le dossier ne contient pas tous les fichiers requis."},
+        {"HD Texture Pack", "Pack de textures HD"},
+        {"Download", "Télécharger"},
+        {"Try Again", "Réessayer"},
+        {"Installing...", "Installation..."},
+        {"More Coming Soon!", "D'autres arrivent bientôt !"},
+        {"Downloading from the pack's own download page.", "Téléchargement depuis la page officielle du pack."},
+        {"Unpacking the textures.", "Décompression des textures."},
+        {"HD textures by Bighead and friends: a 23 MB download.",
+         "Textures HD de Bighead et ses amis : 23 Mo à télécharger."},
+        {"HD textures by Bighead, razius, jaco8, CDAMJC and Amon1995.",
+         "Textures HD de Bighead, razius, jaco8, CDAMJC et Amon1995."},
+        {"Off: the game's own textures.", "Désactivé : les textures d'origine du jeu."},
+        {"The download failed. Check your connection and try again.",
+         "Le téléchargement a échoué. Vérifiez votre connexion et réessayez."},
+        {"The download was damaged. Try again.", "Le téléchargement est endommagé. Réessayez."},
+        {"Couldn't install the pack: is there room on the drive?",
+         "Impossible d'installer le pack : reste-t-il de la place sur le disque ?"},
+        {"Frame Interpolation", "Interpolation d'images"},
+        {"Draws frames in between; 60 smooths Battery Saver's 30FPS back to 60.",
+         "Ajoute des images intermédiaires ; 60 ramène les 30FPS de l'économiseur de batterie à 60."},
+        {"Draws frames in between for smoother motion on screens above 60Hz.",
+         "Ajoute des images intermédiaires pour un mouvement plus fluide sur les écrans au-delà de 60Hz."},
+        {"Aspect Ratio", "Format d'image"},
+        {"Original 4:3", "4:3 d'origine"},
+        {"The screen's own resolution.", "La résolution de l'écran."},
+        {"The Wii's original 4:3 picture.", "L'image 4:3 d'origine de la Wii."},
+        {"The game's 16:9 widescreen picture.", "L'image 16:9 du jeu."},
+        {"Switching between 4:3 and widescreen takes effect after a restart.",
+         "Passer du 4:3 au 16:9 prend effet au prochain démarrage."},
+        {"Display", "Affichage"},
+        {"Graphics", "Graphismes"},
+        {"How the game is shown on your screen.", "Comment le jeu s'affiche sur votre écran."},
+        {"How the game is drawn, and how smoothly it moves.", "Comment le jeu est dessiné, et sa fluidité."},
+        {"Bluetooth Passthrough", "Bluetooth direct"},
+        {"Auto", "Auto"},
+        {"Pair Wii Remotes", "Associer des Wii Remote"},
+        {"Pair", "Associer"},
+        {"Real Wii Remotes through a USB Bluetooth adapter, speaker included. Takes effect after a restart.",
+         "De vraies Wii Remote via un adaptateur Bluetooth USB, haut-parleur compris. Prend effet au prochain démarrage."},
+        {"Then press the red SYNC button on each Wii Remote.",
+         "Appuyez ensuite sur le bouton rouge SYNC de chaque Wii Remote."},
+        {"In use: %s", "Utilisé : %s"},
+        {"Not in use: %s", "Inutilisé : %s"},
     };
     return table;
 }
@@ -216,8 +418,8 @@ std::string Tr(std::string_view english) {
         language = LanguageIndex(RuntimeConfigFile::Language());
         g_language.store(language, std::memory_order_relaxed);
     }
-    if (language == 1) {
-        const Table& table = Italian();
+    if (language > 0) {
+        const Table& table = language == 1 ? Italian() : language == 2 ? Spanish() : French();
         if (const auto it = table.find(english); it != table.end()) {
             return it->second;
         }

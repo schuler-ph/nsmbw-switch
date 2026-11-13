@@ -18,6 +18,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
+import android.os.SystemClock;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
@@ -87,12 +88,24 @@ public final class LauncherActivity extends Activity {
     private boolean updating;
     /** An update waiting for the player to allow installs from this app. */
     private Updater.Release waitingUpdate;
+    /** startUpdate is under way (its question or its download): a later check doesn't start a second one. */
+    private boolean updateOffered;
+    /** When the app last looked for an update (SystemClock.elapsedRealtime), or -1: Auto Update looks again on
+     *  coming back to the app, at most once every RECHECK_MILLIS. */
+    private static long sLastUpdateCheck = -1;
+    private static final long RECHECK_MILLIS = 5 * 60 * 1000;
 
     private TextView status;
     private Button play;
+    /** Under Play, only for the original game (AppFiles.retailDisc); its page is up while modsShown. */
+    private Button mods;
+    private View home;
+    private boolean modsShown;
     private View steps;
     /** The Newer Super Mario Bros. Wii tab is picked; with its module installed, Play starts Newer. */
     private boolean newerTab, newer;
+    /** "The folder doesn't include all required files." was shown: once per visit is enough. */
+    private boolean incompleteShown;
     /** For testing: a folder URL to download the Newer module from instead of the release (the
      *  APK's SHA-256 still has to match). */
     static final String EXTRA_NEWER_MODULE_BASE = "newerModuleBase";
@@ -182,6 +195,10 @@ public final class LauncherActivity extends Activity {
         play = button(Lang.t("Play"), true);
         play.setOnClickListener(v -> startActivity(GameActivity.intent(this)));
         intro.addView(play, matchWidth(dp(14)));
+        mods = button(Lang.t("Mods"), false);
+        mods.setOnClickListener(v -> showMods());
+        mods.setVisibility(View.GONE);  // refresh() shows it once the game is known to be the original
+        intro.addView(mods, matchWidth(dp(10)));
         // The Newer tab before its module is here: the download in Play's place, no game data yet.
         final boolean needModule = newerTab && !newer;
         if (needModule) {
@@ -339,6 +356,7 @@ public final class LauncherActivity extends Activity {
         final ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         scroll.addView(page);
+        home = scroll;
         setContentView(scroll);
         restartGameIfAsked(getIntent());
         if (opened && settings.autoUpdate()) {
@@ -385,6 +403,12 @@ public final class LauncherActivity extends Activity {
             waitingUpdate = null;
             startUpdate(release);
         }
+        // Auto Update also on coming back to the app: onCreate only runs on a fresh start, and Android often
+        // keeps the app in memory, so reopening it would otherwise never look.
+        if (settings.autoUpdate() && !updating && !updateOffered && waitingUpdate == null
+                && (sLastUpdateCheck < 0 || SystemClock.elapsedRealtime() - sLastUpdateCheck >= RECHECK_MILLIS)) {
+            checkForUpdates(true);
+        }
     }
 
     // --- updates -------------------------------------------------------------------------------
@@ -399,6 +423,7 @@ public final class LauncherActivity extends Activity {
             return;
         }
         updating = true;
+        sLastUpdateCheck = SystemClock.elapsedRealtime();
         updateCheck.setEnabled(false);
         updateCheck.setText(Lang.t("Checking for updates\u2026"));
         new Thread(() -> {
@@ -431,21 +456,25 @@ public final class LauncherActivity extends Activity {
     }
 
     private void startUpdate(Updater.Release release) {
+        updateOffered = true;
         if (!Updater.canInstall(this)) {
             new AlertDialog.Builder(this)
                     .setTitle(Lang.f("NSMBW %s is available", release.version))
                     .setMessage(Lang.t("To install updates, let NSMBW install apps: turn on Allow from this source "
                             + "on the next screen, then come back here."))
                     .setPositiveButton(Lang.t("Open Settings"), (d, w) -> {
+                        updateOffered = false;  // waitingUpdate holds it from here
                         waitingUpdate = release;
                         startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                                 Uri.parse("package:" + getPackageName())));
                     })
                     .setNegativeButton(Lang.t("Not Now"), (d, w) -> {
+                        updateOffered = false;
                         if (skipAfterCheck) {
                             openGame();
                         }
                     })
+                    .setOnCancelListener(d -> updateOffered = false)
                     .show();
             return;
         }
@@ -476,6 +505,7 @@ public final class LauncherActivity extends Activity {
             main.post(() -> {
                 dialog.dismiss();
                 if (error != null) {
+                    updateOffered = false;
                     new AlertDialog.Builder(this).setMessage(Lang.f("The update failed: %s", error))
                             .setPositiveButton(Lang.t("OK"), (d, w) -> {
                                 if (skipAfterCheck) {
@@ -508,8 +538,13 @@ public final class LauncherActivity extends Activity {
             showStatus(Lang.t("Newer Super Mario Bros. Wii needs its support module: download it below."), AMBER);
             return;
         }
-        final boolean present = AppFiles.hasGameData(this, newer);
+        // Any game folder counts as imported: one with files missing is told so below, not started.
+        final boolean present = AppFiles.gameDir(this, newer).isDirectory();
         final String problem = present ? AppFiles.gameProblem(AppFiles.gameDir(this, newer), newer) : null;
+        if (problem != null && problem.equals(Lang.t(AppFiles.INCOMPLETE)) && !incompleteShown) {
+            incompleteShown = true;
+            new AlertDialog.Builder(this).setMessage(problem).setPositiveButton(Lang.t("OK"), null).show();
+        }
         if (!present && newer) {
             showStatus(Lang.t("No Newer game data yet. Import its disc image, the folder Dolphin made, or a zip of it."),
                     AMBER);
@@ -522,6 +557,57 @@ public final class LauncherActivity extends Activity {
         }
         play.setEnabled(present && problem == null);
         steps.setVisibility(present && problem == null ? View.GONE : View.VISIBLE);
+        showModsIfRetail(present && !newer);
+    }
+
+    /** Mods only for the original game: its disc ID and main.dol, checked off the UI thread. */
+    private void showModsIfRetail(boolean baseGame) {
+        if (!baseGame) {
+            mods.setVisibility(View.GONE);
+            return;
+        }
+        final File root = AppFiles.gameDir(this, false);
+        new Thread(() -> {
+            final boolean retail = AppFiles.retailDisc(root);
+            main.post(() -> mods.setVisibility(retail ? View.VISIBLE : View.GONE));
+        }, "retail-check").start();
+    }
+
+    /** The Mods page: nothing to manage yet. Back (or the phone's Back) returns to the start menu. */
+    private void showMods() {
+        final LinearLayout page = new LinearLayout(this);
+        page.setOrientation(LinearLayout.VERTICAL);
+        page.setGravity(Gravity.CENTER);
+        page.setPadding(dp(20), dp(16), dp(20), dp(20));
+        final TextView title = text(Lang.t("Mods"), 34);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        page.addView(title, matchWidth(0));
+        final TextView soon = text(Lang.t("Coming Soon!"), 18);
+        soon.setTextColor(MUTED);
+        page.addView(soon, matchWidth(dp(20)));
+        final Button back = button(Lang.t("Back"), false);
+        back.setOnClickListener(v -> closeMods());
+        final LinearLayout.LayoutParams backParams = new LinearLayout.LayoutParams(
+                Math.min(dp(340), getResources().getDisplayMetrics().widthPixels - dp(40)),
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        backParams.topMargin = dp(32);
+        page.addView(back, backParams);
+        setContentView(page);
+        modsShown = true;
+    }
+
+    private void closeMods() {
+        modsShown = false;
+        setContentView(home);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (modsShown) {
+            closeMods();
+            return;
+        }
+        super.onBackPressed();
     }
 
     /** Getting Started, laid out like KartPad's. */
@@ -842,6 +928,7 @@ public final class LauncherActivity extends Activity {
             final String message = result;
             main.post(() -> {
                 dialog.dismiss();
+                if (message.equals(Lang.t(AppFiles.INCOMPLETE))) incompleteShown = true;  // said once, below
                 refresh();
                 new AlertDialog.Builder(this).setMessage(message).setPositiveButton(Lang.t("OK"), null)
                         .setOnDismissListener(d -> {
@@ -860,7 +947,8 @@ public final class LauncherActivity extends Activity {
         final String problem = AppFiles.gameProblem(root, newer);
         if (problem != null) {
             AppFiles.deleteRecursively(staging);
-            return Lang.f("%s\n\nNothing was changed.", problem);
+            // A disc with files left out gets just this sentence (the player asked for it word for word).
+            return problem.equals(Lang.t(AppFiles.INCOMPLETE)) ? problem : Lang.f("%s\n\nNothing was changed.", problem);
         }
         final File game = AppFiles.gameDir(this, newer);
         AppFiles.deleteRecursively(game);
@@ -879,8 +967,7 @@ public final class LauncherActivity extends Activity {
                 if (e.directory && e.name.equalsIgnoreCase("DATA") && looksLikeGame(resolver, tree, e.id)) nested = e.id;
             }
             if (nested == null) {
-                return Lang.t("That folder is not an extracted game: it needs files/ and sys/ (or a DATA folder holding "
-                        + "them), as Dolphin's Extract Entire Disc makes.");
+                return Lang.t(AppFiles.INCOMPLETE);
             }
             rootId = nested;
         }
@@ -921,7 +1008,7 @@ public final class LauncherActivity extends Activity {
             }
         }
         if (bootId == null) {
-            return Lang.t("That folder has no sys/boot.bin, so the game can't be identified.");
+            return Lang.t(AppFiles.INCOMPLETE);
         }
         final byte[] header = new byte[8];
         try (InputStream in = resolver.openInputStream(DocumentsContract.buildDocumentUriUsingTree(tree, bootId))) {
@@ -939,8 +1026,7 @@ public final class LauncherActivity extends Activity {
         final File root = findGameRoot(staging, 3);
         if (root == null) {
             AppFiles.deleteRecursively(staging);
-            return Lang.f("%s\n\nNothing was changed.", Lang.t("That zip doesn't hold an extracted game: zip the "
-                    + "folder Dolphin's Extract Entire Disc made (the one with files and sys in it)."));
+            return Lang.t(AppFiles.INCOMPLETE);
         }
         return install(root, count);
     }

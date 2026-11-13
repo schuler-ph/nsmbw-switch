@@ -1,5 +1,6 @@
 #pragma once
 #include "ppc_isa_fpenv.h"
+#include "../guest_thread_state.h"
 
 #include <cmath>
 #include <cstdint>
@@ -53,15 +54,11 @@ struct CpuContext {
     uint32_t msr;       // Machine State Register
 };
 
-inline thread_local CpuContext* g_currentCpuContext = nullptr;
-// Hot-path access (ppc_isa_tls.h): every translated call compares against it.
-MKW_HOT_TLS_ACCESSOR(CurrentCpuContextTls, CpuContext*, g_currentCpuContext, "g_currentCpuContext")
-
 class CpuContextScope {
 public:
     explicit CpuContextScope(CpuContext* ctx)
     {
-        CpuContext*& current = CurrentCpuContextTls();
+        CpuContext*& current = GuestThreadStateTls().currentCpuContext;
         previous_ = current;
         current = ctx;
 
@@ -72,7 +69,7 @@ public:
 
     ~CpuContextScope()
     {
-        CurrentCpuContextTls() = previous_;
+        GuestThreadStateTls().currentCpuContext = previous_;
         if (previous_ != nullptr)
             MkwApplyHostNiMode(previous_->fpscr);
         else
@@ -89,7 +86,7 @@ private:
 
 inline CpuContext* TryGetCpuContext() noexcept
 {
-    return CurrentCpuContextTls();
+    return GuestThreadStateTls().currentCpuContext;
 }
 
 inline CpuContext* CurrentCpuContext()
