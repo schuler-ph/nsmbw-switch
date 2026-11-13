@@ -373,16 +373,23 @@ if(TARGET mkw_base_sensitive)
     target_sources(WiiCompiled PRIVATE $<TARGET_OBJECTS:mkw_base_sensitive>)
 endif()
 if(MKW_PLATFORM_SWITCH)
-    # Homebrew package: WiiCompiled.elf -> nsmbw.nro with a title for the homebrew menu. The icon is
-    # libnx's default one; the game data is not part of the package (see src/platform/switch).
-    set(MKW_SWITCH_NRO_TITLE "NSMBW Recompiled" CACHE STRING "Title the homebrew menu shows")
-    set(MKW_SWITCH_NRO_AUTHOR "WiiCompiled port" CACHE STRING "Author the homebrew menu shows")
-    set(MKW_SWITCH_NRO_VERSION "0.1.0" CACHE STRING "Version the homebrew menu shows")
+    # Homebrew package: WiiCompiled.elf -> nsmbw.nro with a title for the homebrew menu and for
+    # forwarders made from it; the game data is not part of the package (see src/platform/switch).
+    # The icon is libnx's default one unless MKW_SWITCH_NRO_ICON names a 256x256 JPEG. Keep that
+    # file outside the repository if it is not your own artwork (e.g. the game's box art).
+    set(MKW_SWITCH_NRO_TITLE "NSMBW for Nintendo Switch" CACHE STRING "Title the homebrew menu shows")
+    set(MKW_SWITCH_NRO_AUTHOR "schuler-ph" CACHE STRING "Author the homebrew menu shows")
+    set(MKW_SWITCH_NRO_VERSION "0.5.0" CACHE STRING "Version the homebrew menu shows")
+    set(MKW_SWITCH_NRO_ICON "" CACHE FILEPATH "256x256 JPEG icon for the .nro (empty: libnx default)")
     nx_generate_nacp(OUTPUT "${CMAKE_BINARY_DIR}/nsmbw.nacp"
         NAME "${MKW_SWITCH_NRO_TITLE}" AUTHOR "${MKW_SWITCH_NRO_AUTHOR}"
         VERSION "${MKW_SWITCH_NRO_VERSION}")
+    set(_mkw_nro_icon)
+    if(MKW_SWITCH_NRO_ICON)
+        set(_mkw_nro_icon ICON "${MKW_SWITCH_NRO_ICON}")
+    endif()
     nx_create_nro(nsmbw_nro TARGET WiiCompiled OUTPUT "${CMAKE_BINARY_DIR}/nsmbw.nro"
-        NACP "${CMAKE_BINARY_DIR}/nsmbw.nacp")
+        NACP "${CMAKE_BINARY_DIR}/nsmbw.nacp" ${_mkw_nro_icon})
 endif()
 
 # Dev only, not part of any build by default: extracts a disc image the way the game's Open ISO

@@ -114,6 +114,9 @@ You do this once, with Dolphin on a computer:
    The first build takes about 20 minutes with 4 jobs (each translated shard needs about 1 GB of
    RAM); the result is `../build-wb-switch/nsmbw.nro`, about 110 MiB.
 
+   Optional: `--cmake-arg -DMKW_SWITCH_NRO_ICON=/path/to/icon.jpg` (a 256×256 JPEG) gives the `.nro`,
+   and forwarders made from it, an icon instead of libnx's default one.
+
 ## Install
 
 Copy `../sd-stage/switch/nsmbw/` to `sdmc:/switch/nsmbw/` on the SD card, then add your extracted
