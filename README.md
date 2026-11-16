@@ -11,6 +11,8 @@ recompilation: the game's PowerPC code is translated to C++ and compiled for the
 ahead of time. No emulator, no interpreter, no JIT. It runs as an `.nro` from hbmenu on a Switch 1
 with Atmosphère, with local multiplayer for up to four players on Joy-Cons and Pro Controllers.
 
+https://github.com/user-attachments/assets/8007eb95-c8d6-4d01-a559-9f4a03579041
+
 This is a fork of [WitherBlitz](https://github.com/WitherBlitz)'s
 [NSMB Wii Multiplayer Recompilation](https://github.com/WitherBlitz/NSMB-Wii-Multiplayer-Recompilation),
 which this Switch port builds on.
