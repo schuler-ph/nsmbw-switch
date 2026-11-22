@@ -62,17 +62,12 @@ own risk.
 - [sys-clk](https://github.com/retronx-team/sys-clk) with a docked CPU profile of 1785 MHz, for full
   speed. sys-clk sees the game you start hbmenu through, not the `.nro`, so set the profile on that
   game (or as the global profile).
-- Your own **USA `SMNE01` revision 1** disc of New Super Mario Bros. Wii and Dolphin on a computer
-  to extract it. Other regions and revisions are rejected: the port hooks the game at exact
-  addresses.
-- A Linux machine or WSL2 (tested: Ubuntu 24.04) with about 20 GB free besides your extracted disc,
-  and 16 GB of RAM.
-- devkitPro with devkitA64, libnx, deko3d, switch-mesa and switch-tools. Tested versions: the
-  `devkitpro/devkita64:20260219` Docker image (devkitA64 r29.2, libnx 4.12.0, deko3d 0.5.0,
-  switch-tools 1.13.1).
-- The .NET 8 SDK, Python 3, CMake, Ninja and Clang for translating the game
-  ([`projects/nsmbw/BUILDING.md`](projects/nsmbw/BUILDING.md), sections 1-3 and 6), plus `meson`,
-  `bison`, `flex` and `python3-mako` for the graphics dependencies.
+- Your own **USA `SMNE01` revision 1** disc of New Super Mario Bros. Wii, as a disc image (`.iso`
+  or `.wbfs`) or extracted with Dolphin. Other regions and revisions are rejected: the port hooks the
+  game at exact addresses.
+- To build: Docker on Linux or in WSL2 on Windows (tested: Ubuntu 24.04 in WSL2), about 20 GB of free
+  disk and enough memory for 4 jobs (about 5 GB at the peak; tested with 16 GB). Everything else
+  comes in a Docker image with pinned versions ([`docker/Dockerfile`](docker/Dockerfile)).
 
 > [!NOTE]
 > Nobody here will tell you where to get the game. Dumping your own disc is on you, and links to
@@ -80,53 +75,70 @@ own risk.
 
 ## Getting the game files
 
-You do this once, with Dolphin on a computer:
+Dump your own disc as an `.iso` or `.wbfs` (for example with CleanRip on a Wii). `build.sh` checks
+the game ID and revision before it does anything else.
 
-1. In Dolphin, right-click **New Super Mario Bros. Wii** and choose **Properties**.
-2. Check the **Info** tab: the game ID must be `SMNE01` and the revision **1**.
-3. Open the **Filesystem** tab, right-click the disc at the top and choose **Extract Entire Disc**.
-   Pick an empty folder. You get a folder with `files` and `sys` in it.
+- An `.rvz` or `.wia` from Dolphin: right-click the game in Dolphin, **Convert File...**, format
+  ISO. (`projects/nsmbw/tools/unpack_game.py` reads them directly with
+  [nodtool](https://github.com/encounter/nod) on `PATH`, but the Docker build doesn't ship it yet.)
+- A folder works too: in Dolphin, **Properties** → **Filesystem**, right-click the disc, **Extract
+  Entire Disc**. You get a folder with `files` and `sys` in it.
 
 ## Build
 
-1. Translate the game ([`BUILDING.md`](projects/nsmbw/BUILDING.md), section 6). `build-linux.sh`
-   checks your disc, translates its code into `generated/` and also builds a Linux version; the
-   Switch build uses the same translated code (about 5 minutes):
+Clone the repository (in WSL2: inside the Linux file system, not under `/mnt/c`) and run one
+command:
 
-   ```
-   python3 projects/nsmbw/tools/unpack_game.py <your extracted game folder>
-   python3 projects/nsmbw/tools/prelink_rels.py
-   projects/nsmbw/tools/build-linux.sh --game <your extracted game folder>
-   ```
+```
+git clone https://github.com/schuler-ph/nsmbw-switch.git
+cd nsmbw-switch
+./build.sh "<your disc image or extracted game folder>"
+```
 
-2. Build Dawn with the deko3d backend and libuam once (about 7 minutes plus the download on a
-   16-thread PC with 8 jobs). The script downloads Dawn (with its submodules), libuam and two patcher
-   scripts from WiiCompiled-Switch at pinned commits into the folder you give it, applies the patches
-   from this repository and builds both as static libraries:
+`build.sh` builds the Docker image, checks your game, translates its code, builds the graphics
+libraries (Dawn with deko3d, libuam) and the `.nro`, and puts the SD card folder into
+`out/switch/nsmbw/`. The first run took 32 minutes with 4 jobs on a Ryzen 7 5800X3D; a second run
+takes about 2 minutes. Options:
 
-   ```
-   source /etc/profile.d/devkitpro.sh
-   projects/nsmbw/tools/build-switch-deps.sh ../switch-deps
-   ```
+- `--deps <file or URL>`: a prebuilt archive of Dawn and libuam (`build-switch-deps.sh --pack`)
+  instead of building them (about 10 minutes less); it is checked against the SHA-256 pinned in
+  `build-switch.sh`.
+- `--jobs N` (default: from the free memory, about 1 GB per job), `--out DIR`, `--clean`.
 
-3. Build the `.nro` and lay out an SD card folder:
+Your game never goes into the image. What is made from it stays on your machine: `generated/`,
+`out/` and the Docker volume `nsmbw-work-<id>` (`docker volume rm` removes it).
 
-   ```
-   D=../switch-deps
-   projects/nsmbw/tools/build-switch.sh --dawn-src $D/dawn --dawn-build $D/dawn-build-switch \
-     --uam $D/uam/build-switch/libuam.a --stage ../sd-stage
-   ```
+<details>
+<summary>Without Docker</summary>
 
-   The first build takes about 20 minutes with 4 jobs (each translated shard needs about 1 GB of
-   RAM); the result is `../build-wb-switch/nsmbw.nro`, about 110 MiB.
+You need devkitPro (devkitA64, libnx, deko3d, switch-mesa, switch-tools; tested: the
+`devkitpro/devkita64:20260219` image), the .NET 8 SDK, Python 3, CMake, Ninja and Clang
+([`projects/nsmbw/BUILDING.md`](projects/nsmbw/BUILDING.md), sections 1-3 and 6), plus `meson`,
+`bison`, `flex` and `python3-mako` for Dawn. Then:
 
-   Optional: `--cmake-arg -DMKW_SWITCH_NRO_ICON=/path/to/icon.jpg` (a 256×256 JPEG) gives the `.nro`,
-   and forwarders made from it, an icon instead of libnx's default one.
+```
+python3 projects/nsmbw/tools/unpack_game.py <disc image or extracted game folder>
+python3 projects/nsmbw/tools/prelink_rels.py
+projects/nsmbw/tools/build-linux.sh --game <extracted game folder>
+source /etc/profile.d/devkitpro.sh
+projects/nsmbw/tools/build-switch-deps.sh ../switch-deps
+D=../switch-deps
+projects/nsmbw/tools/build-switch.sh --dawn-src $D/dawn --dawn-build $D/dawn-build-switch \
+  --uam $D/uam/build-switch/libuam.a --stage ../sd-stage
+```
+
+A disc image is extracted next to the repository (`../disc-SMNE01`); that is the folder for
+`--game` and for the SD card. `build-switch.sh --deps <archive>` replaces the Dawn and libuam options.
+Optional: `--cmake-arg -DMKW_SWITCH_NRO_ICON=/path/to/icon.jpg` (a 256×256 JPEG) gives the `.nro`,
+and forwarders made from it, an icon instead of libnx's default one.
+
+</details>
 
 ## Install
 
-Copy `../sd-stage/switch/nsmbw/` to `sdmc:/switch/nsmbw/` on the SD card, then add your extracted
-disc as `sdmc:/switch/nsmbw/game/` (with `files/` and `sys/` in it):
+Copy `out/switch/nsmbw/` to `sdmc:/switch/nsmbw/` on the SD card. If you built from a disc image,
+the game is already in it as `game/`; if you built from a folder, add that folder as
+`sdmc:/switch/nsmbw/game/` (with `files/` and `sys/` in it):
 
 ```
 sdmc:/switch/nsmbw/
@@ -254,6 +266,8 @@ section 5 of the GPLv3. The full list is `git diff 2ff64f5`; in short:
 - A Nintendo Switch platform layer: `runtime/src/platform/switch/`, `aurora-main/lib/switch/`, the
   Switch patches under `aurora-main/cmake/patches/` and `projects/nsmbw/tools/patches/`, and the build
   scripts `build-switch-deps.sh` and `build-switch.sh`.
+- A one-command build: `build.sh` with `docker/`, disc images in `unpack_game.py` (WiiDiscExtract
+  as a host tool, nodtool for compressed images) and prebuilt Dawn/libuam archives (`--pack`, `--deps`).
 - Speed-ups for the Switch's CPU and GPU: a flat guest memory path, a separate GX thread, faster FIFO
   and pipeline handling, a native reverb, a high-level path for water effects, particle shortcuts, and
   Switch defaults for these.
