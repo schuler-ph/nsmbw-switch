@@ -43,7 +43,7 @@ deps_sha256=""
 cmake_args=()
 # SHA-256 of the archive build-switch-deps.sh --pack makes from its pins with the toolchain of
 # devkitpro/devkita64:20260219 (reproducible: the same pins give the same bytes).
-pinned_deps_sha256=PINNED_DEPS_SHA256
+pinned_deps_sha256=483308448983b70a6277d86e042c56b54c4f9032f680bbf548a4a938975ef244
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dawn-src) dawn_src=$2; shift 2 ;;
