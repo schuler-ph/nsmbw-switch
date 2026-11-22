@@ -10,14 +10,35 @@
 # Needs: devkitPro (devkitA64, libnx, deko3d, switch-mesa, switch-tools), git, CMake, Ninja, Python 3
 # with mako, meson, bison and flex. About 7 minutes plus the download with 8 jobs on a 16-thread PC, and about 5 GB of disk.
 #
-# Usage: build-switch-deps.sh [PREFIX]   (default: ../switch-deps next to the repository)
+# Usage: build-switch-deps.sh [PREFIX] [--pack ARCHIVE.tar.xz]   (default PREFIX: ../switch-deps)
 # Then:  build-switch.sh --dawn-src PREFIX/dawn --dawn-build PREFIX/dawn-build-switch \
 #                        --uam PREFIX/uam/build-switch/libuam.a
+# or, after --pack:  build-switch.sh --deps ARCHIVE.tar.xz
+#
+# --pack also writes a reproducible archive of what build-switch.sh needs: both static libraries
+# without debug info, Dawn's public and generated headers, the license texts, the patches and patcher
+# scripts that were applied, a MANIFEST and SHA256SUMS; ARCHIVE.sha256 goes beside it. Source paths
+# are compiled in as relative ones (-ffile-prefix-map), so the same pins and toolchain give the same
+# bytes in any PREFIX. Packing checks for the toolchain of devkitpro/devkita64:20260219.
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-deps=${1:-$repo/../switch-deps}
+deps=""
+pack=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --pack) pack=$2; shift 2 ;;
+        -h|--help) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+        -*) echo "build-switch-deps.sh: unknown argument: $1" >&2; exit 1 ;;
+        *) [[ -z "$deps" ]] || { echo "build-switch-deps.sh: more than one PREFIX" >&2; exit 1; }
+           deps=$1; shift ;;
+    esac
+done
+deps=${deps:-$repo/../switch-deps}
 jobs=${JOBS:-12}
+# The toolchain a published archive is built with: the packages of devkitpro/devkita64:20260219.
+toolchain_image=devkitpro/devkita64:20260219
+toolchain_pkgs=("deko3d 0.5.0-1" "devkitA64 r29.2-1" "devkita64-cmake 1.1.3-1" "libnx 4.12.0-1" "switch-cmake 1.5.2-1")
 
 uam_pin=f8c9eef01ffe06334d530393d636d69e2b52744b
 dawn_pin=13abc3bc8ea2d3c2050f9e77a12d012108ceee24
@@ -47,6 +68,15 @@ checkout() { # url dir commit
 }
 
 mkdir -p "$deps"
+# Canonical, so that -ffile-prefix-map below matches the paths the compiler sees.
+deps=$(cd "$deps" && pwd -P)
+if [[ -n "$pack" ]]; then
+    command -v xz >/dev/null || fail "--pack needs xz"
+    installed=$("$DEVKITPRO/pacman/bin/pacman" -Q 2>/dev/null) || fail "cannot list devkitPro packages"
+    for p in "${toolchain_pkgs[@]}"; do
+        grep -qxF "$p" <<< "$installed" || fail "--pack needs $p (the toolchain of $toolchain_image)"
+    done
+fi
 
 echo "[1/5] patcher scripts from WiiCompiled-Switch @ $wcs_pin"
 checkout https://github.com/yashin-sh/WiiCompiled-Switch.git "$deps/WiiCompiled-Switch" "$wcs_pin"
@@ -112,6 +142,8 @@ fi
 echo "[4/5] configure Dawn (deko3d backend only, static monolithic library)"
 cmake -S "$deps/dawn" -B "$deps/dawn-build-switch" -G Ninja \
     -DCMAKE_TOOLCHAIN_FILE="$DEVKITPRO/cmake/Switch.cmake" -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS_RELEASE="-g -O2 -DNDEBUG -ffile-prefix-map=$deps/=" \
+    -DCMAKE_CXX_FLAGS_RELEASE="-g -O2 -DNDEBUG -ffile-prefix-map=$deps/=" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DDAWN_FETCH_DEPENDENCIES=OFF \
     -DDAWN_ENABLE_DEKO3D=ON -DDAWN_UAM_DIR="$deps/uam" \
     -DDAWN_ENABLE_VULKAN=OFF -DDAWN_ENABLE_NULL=OFF -DDAWN_ENABLE_OPENGLES=OFF -DDAWN_ENABLE_DESKTOP_GL=OFF \
@@ -130,3 +162,71 @@ lib=$deps/dawn-build-switch/src/dawn/native/libwebgpu_dawn.a
 aarch64-none-elf-nm -C "$lib" | grep 'dawn::native::deko3d' >/dev/null || fail "$lib has no deko3d backend"
 echo "Done: $lib"
 echo "      $deps/uam/build-switch/libuam.a"
+[[ -n "$pack" ]] || exit 0
+
+pack=$(realpath -m "$pack")
+echo "[pack] $pack"
+stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
+top=$stage/nsmbw-switch-deps
+mkdir -p "$top/dawn" "$top/dawn-build-switch/src/dawn/native" "$top/uam" "$top/licenses" "$top/patches"
+cp -r "$deps/dawn/include" "$top/dawn/"
+mkdir -p "$top/dawn-build-switch/gen"
+cp -r "$deps/dawn-build-switch/gen/include" "$top/dawn-build-switch/gen/"
+# AuroraDawnProvider.cmake reads only this line of Dawn's cache (OpenGL ES fallback on or off).
+grep '^DAWN_ENABLE_OPENGLES:BOOL=' "$deps/dawn-build-switch/CMakeCache.txt" > "$top/dawn-build-switch/CMakeCache.txt"
+# Debug info only: the code is what the linker puts into the .nro. -D keeps the ar headers fixed.
+aarch64-none-elf-strip -g -D -o "$top/dawn-build-switch/src/dawn/native/libwebgpu_dawn.a" "$lib"
+aarch64-none-elf-strip -g -D -o "$top/uam/libuam.a" "$deps/uam/build-switch/libuam.a"
+for a in "$top/dawn-build-switch/src/dawn/native/libwebgpu_dawn.a" "$top/uam/libuam.a"; do
+    # Built before -ffile-prefix-map? Then the absolute PREFIX is compiled in and the archive differs
+    # by folder. grep reads a file here, not a pipe, so pipefail cannot trip on it.
+    ! grep -qaF "$deps/" "$a" || fail "$a contains the path $deps: delete $deps/dawn-build-switch and rebuild"
+done
+cp "$deps/dawn/LICENSE" "$top/licenses/Dawn-BSD-3-Clause.txt"
+cp "$deps/dawn/third_party/abseil-cpp/LICENSE" "$top/licenses/Abseil-Apache-2.0.txt"
+cp "$deps/uam/LICENSE" "$top/licenses/libuam-zlib-and-Mesa-MIT.txt"
+cp "$repo/LICENSE" "$top/licenses/GPL-3.0.txt"
+cp "$dawn_patch" "$repo"/projects/nsmbw/tools/patches/dawn-*.patch \
+    "$repo"/projects/nsmbw/tools/patches/uam-*.patch "$patcher/patch-dawn-abseil-switch.py" \
+    "$patcher/patch-dawn-switch.py" "${BASH_SOURCE[0]}" "$top/patches/"
+{
+    echo "format=1"
+    echo "dawn=https://dawn.googlesource.com/dawn $dawn_pin"
+    echo "dawn_abseil_cpp=$abseil_pin"
+    echo "libuam=https://github.com/averne/libuam $uam_pin"
+    echo "wiicompiled_switch=https://github.com/yashin-sh/WiiCompiled-Switch $wcs_pin"
+    echo "toolchain_image=$toolchain_image"
+    for p in "${toolchain_pkgs[@]}"; do echo "toolchain_package=$p"; done
+    echo "compiler=$(aarch64-none-elf-gcc --version | head -n 1)"
+    echo "dawn_build=Release, deko3d backend only, static monolithic, -g -O2 -DNDEBUG -ffile-prefix-map, debug info stripped"
+    echo "uam_build=meson release, static"
+} > "$top/MANIFEST"
+cat > "$top/README.txt" <<'EOF'
+Prebuilt Switch graphics dependencies for nsmbw-switch (https://github.com/schuler-ph/nsmbw-switch):
+Dawn (WebGPU) with its deko3d backend and libuam, static libraries for devkitA64.
+Use: projects/nsmbw/tools/build-switch.sh --deps <this archive>. Made by build-switch-deps.sh --pack
+(in patches/), which rebuilds the same bytes from the pins in MANIFEST with the toolchain named there.
+
+Licenses (texts in licenses/):
+- Dawn and Tint: BSD-3-Clause, Copyright The Dawn & Tint Authors.
+- Abseil (inside libwebgpu_dawn.a): Apache-2.0, Copyright The Abseil Authors.
+- libuam: zlib, Copyright (C) 2018-2020 fincs; its mesa-imported/ files are MIT (Mesa 3-D).
+- The Switch patches applied to Dawn: dawn-nintendo-switch-platform.patch from DriftDroid
+  (https://github.com/dorPXP/driftdroid, GPL-3.0), patch-dawn-*.py from WiiCompiled-Switch
+  (https://github.com/yashin-sh/WiiCompiled-Switch, GPL-3.0-only) and the nsmbw-switch patches
+  (GPL-3.0). The patched libraries are therefore conveyed as a whole under the GNU GPL version 3.
+
+Corresponding source: the upstream commits in MANIFEST plus everything in patches/, applied by
+build-switch-deps.sh. The same source is also offered at the place this archive was downloaded from.
+EOF
+(cd "$top" && find . -type f ! -name SHA256SUMS | LC_ALL=C sort | sed 's|^\./||' | xargs sha256sum > SHA256SUMS)
+find "$top" -type d -exec chmod 755 {} +
+find "$top" -type f -exec chmod 644 {} +
+mkdir -p "$(dirname "$pack")"
+tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --format=gnu -C "$stage" -cf - nsmbw-switch-deps |
+    xz -9 -T1 -c > "$pack.part"
+mv "$pack.part" "$pack"
+(cd "$(dirname "$pack")" && sha256sum "$(basename "$pack")" > "$(basename "$pack").sha256")
+echo "Packed: $pack ($(du -h "$pack" | cut -f1))"
+cat "$pack.sha256"
