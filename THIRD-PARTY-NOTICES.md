@@ -209,7 +209,7 @@ unmodified, with their license texts, in the installer's `licenses/` folder.
 ## Nintendo Switch build (this fork)
 
 The Switch build ([README](README.md#build)) has no release downloads;
-it is built locally. It additionally links the components below into `nsmbw.nro`, besides the ones
+it is built locally, optionally from the prebuilt dependency archive below. It additionally links the components below into `nsmbw.nro`, besides the ones
 from the table above that it builds for the Switch (SDL, Abseil, SQLite, Tracy, Mbed TLS and the
 others listed there).
 
@@ -234,7 +234,23 @@ Code taken from other projects:
 - **WiiCompiled-Switch** - GPL-3.0, by yashin-sh.
   Source: <https://github.com/yashin-sh/WiiCompiled-Switch>, commit `b851db9`. Not stored here:
   `projects/nsmbw/tools/build-switch-deps.sh` follows its `scripts/prepare-native-deko3d-deps.sh` and
-  fetches its two Dawn patcher scripts at that commit, checked by SHA-256.
+  fetches its two Dawn patcher scripts at that commit, checked by SHA-256. They are GPL-3.0-only.
+
+### Prebuilt dependency archive (`build-switch-deps.sh --pack`)
+
+`build-switch.sh --deps` can take Dawn and libuam as a prebuilt archive instead of building them.
+The archive holds `libwebgpu_dawn.a` (Dawn, Tint and Abseil, with the Switch patches above),
+`libuam.a`, Dawn's public and generated headers, and:
+
+- `licenses/`: Dawn's BSD-3-Clause text, Abseil's Apache-2.0 text, libuam's license (zlib, with the
+  Mesa MIT license of its `mesa-imported/` files) and the GPL-3.0;
+- `patches/`: every patch and patcher script applied, and `build-switch-deps.sh` itself;
+- `MANIFEST` (upstream commits, toolchain) and `SHA256SUMS`.
+
+Because the Dawn patch from DriftDroid and the WiiCompiled-Switch patcher scripts are GPL-3.0, the
+patched libraries are conveyed as a whole under the GNU GPL version 3. Their corresponding source is
+the upstream commits in `MANIFEST` plus `patches/`; whoever publishes the archive also offers that
+source at the same place (GPLv3 section 6). No such archive is published yet.
 
 ---
 
