@@ -1,0 +1,4 @@
+# The image needs nothing from this folder but the Dockerfile; keep everything else (and any game
+# file someone drops here) out of the build context.
+*
+!Dockerfile
