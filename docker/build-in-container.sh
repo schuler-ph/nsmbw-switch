@@ -14,9 +14,9 @@ if [[ -n "${JOBS:-}" ]]; then
     jobs=$JOBS
 else
     # About 1 GiB per job: a translated shard needs that while compiling (build-switch.sh runs at
-    # most four of them at once), and Dawn's files less. One GiB stays free for the rest.
+    # most four of them at once), Dawn files less; 3 GiB stay free for linking and the system.
     mem_gib=$(awk '/MemAvailable/ {print int($2 / 1048576)}' /proc/meminfo)
-    jobs=$(( mem_gib - 1 < $(nproc) ? mem_gib - 1 : $(nproc) ))
+    jobs=$(( mem_gib - 3 < $(nproc) ? mem_gib - 3 : $(nproc) ))
     (( jobs >= 1 )) || jobs=1
     echo "Jobs: $jobs ($mem_gib GiB free, $(nproc) CPUs; override with --jobs N)"
 fi
