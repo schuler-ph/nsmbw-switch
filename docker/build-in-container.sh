@@ -73,7 +73,14 @@ else
 fi
 
 step "unpack game"
-python3 projects/nsmbw/tools/unpack_game.py "$game"
+if [[ -f "$game" ]]; then
+    # Extract straight into the SD folder: switch/nsmbw/game/ is where the port reads the game, and a
+    # later run reuses it instead of extracting again.
+    mkdir -p /out/switch/nsmbw
+    python3 projects/nsmbw/tools/unpack_game.py "$game" --extract-to /out/switch/nsmbw/game
+else
+    python3 projects/nsmbw/tools/unpack_game.py "$game"
+fi
 python3 projects/nsmbw/tools/prelink_rels.py
 
 step "translate"
@@ -140,5 +147,9 @@ cat "$times"
 nro=$sd/nsmbw.nro
 echo
 echo "Done: $nro ($(du -m "$nro" | cut -f1) MiB, SHA-256 $(sha256sum "$nro" | cut -c1-16)...)"
-echo "Copy the folder switch/nsmbw/ to the root of your SD card and your extracted disc into"
-echo "switch/nsmbw/game/ (so that switch/nsmbw/game/files/ and switch/nsmbw/game/sys/ exist)."
+if [[ -d "$sd/game/files" && -d "$sd/game/sys" ]]; then
+    echo "Copy the folder switch/nsmbw/ to the root of your SD card; the game is already in it (game/)."
+else
+    echo "Copy the folder switch/nsmbw/ to the root of your SD card and your extracted disc into"
+    echo "switch/nsmbw/game/ (so that switch/nsmbw/game/files/ and switch/nsmbw/game/sys/ exist)."
+fi
