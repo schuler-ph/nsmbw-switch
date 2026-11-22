@@ -112,9 +112,29 @@ logged shards "${translator[@]}" emit-build-shards --project "$project" \
     --native-source-dir runtime/src --out generated/build_shards
 
 step "switch deps"
-if [[ -n "${DEPS_ARG:-}" ]]; then
-    echo "Dawn and libuam: prebuilt archive $(basename "$DEPS_ARG")"
-    switch_deps=(--deps "$DEPS_ARG")
+deps_archive=${DEPS_ARG:-}
+case "$deps_archive" in
+    http://*|https://*)
+        # Download here, so that a failed download falls back to building them.
+        cached=$work/deps-archive/$(basename "${deps_archive%%[?#]*}")
+        mkdir -p "$(dirname "$cached")"
+        if [[ -f "$cached" ]]; then
+            echo "Dawn and libuam: $(basename "$cached") already downloaded"
+            deps_archive=$cached
+        elif curl -fsSL --retry 3 -o "$cached.part" "$deps_archive"; then
+            mv "$cached.part" "$cached"
+            echo "Dawn and libuam: downloaded $deps_archive"
+            deps_archive=$cached
+        else
+            rm -f "$cached.part"
+            echo "Couldn't download $deps_archive: building Dawn and libuam here instead"
+            deps_archive=""
+        fi
+        ;;
+esac
+if [[ -n "$deps_archive" ]]; then
+    echo "Dawn and libuam: prebuilt archive $(basename "$deps_archive")"
+    switch_deps=(--deps "$deps_archive")
 else
     # The volume's name carries a hash of build-switch-deps.sh and its patches, so a finished volume
     # matches this checkout's recipe.

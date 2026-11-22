@@ -97,12 +97,14 @@ cd nsmbw-switch
 
 `build.sh` builds the Docker image, checks your game, translates its code, builds the graphics
 libraries (Dawn with deko3d, libuam) and the `.nro`, and puts the SD card folder into
-`out/switch/nsmbw/`. The first run took 32 minutes with 4 jobs on a Ryzen 7 5800X3D; a second run
-takes about 2 minutes. Options:
+`out/switch/nsmbw/`. The first run took 20 minutes with 4 jobs on a Ryzen 7 5800X3D (32 minutes when
+it builds Dawn and libuam itself); a second run takes about 2 minutes. Options:
 
-- `--deps <file or URL>`: a prebuilt archive of Dawn and libuam (`build-switch-deps.sh --pack`)
-  instead of building them (about 10 minutes less); it is checked against the SHA-256 pinned in
-  `build-switch.sh`.
+- Dawn and libuam come prebuilt from the release
+  [`switch-deps-1`](https://github.com/schuler-ph/nsmbw-switch/releases/tag/switch-deps-1) (3.6 MB,
+  checked against the SHA-256 pinned in `build-switch.sh`; its source is attached there too). If the
+  download fails, `build.sh` builds them itself (about 10 minutes more). `--build-deps` always builds
+  them; `--deps <file or URL>` takes another archive from `build-switch-deps.sh --pack`.
 - `--jobs N` (default: from the free memory, about 1 GB per job), `--out DIR`, `--clean`.
 
 Your game never goes into the image. What is made from it stays on your machine: `generated/`,

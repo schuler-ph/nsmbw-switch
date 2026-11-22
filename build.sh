@@ -2,7 +2,7 @@
 # Builds the Nintendo Switch version (.nro) of New Super Mario Bros. Wii with Docker as the only
 # tool on the host, and lays out the SD card folder <out>/switch/nsmbw/.
 #
-# Usage: ./build.sh <game folder or disc image> [--deps FILE|URL] [--out DIR] [--jobs N] [--clean]
+# Usage: ./build.sh <game folder or disc image> [--deps FILE|URL | --build-deps] [--out DIR] [--jobs N] [--clean]
 #
 # The image (docker/Dockerfile) holds only the pinned toolchain. Your game is mounted read-only;
 # everything made from it stays on this machine: generated/ in this repository, the output folder,
@@ -12,13 +12,15 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: ./build.sh <game folder or disc image> [--deps FILE|URL] [--out DIR] [--jobs N] [--clean]
+Usage: ./build.sh <game folder or disc image> [--deps FILE|URL | --build-deps] [--out DIR] [--jobs N] [--clean]
 
   <game>      New Super Mario Bros. Wii, USA SMNE01 revision 1, extracted with Dolphin's
               Extract Entire Disc (a folder with files/ and sys/), or the disc image itself
               (.iso, .wbfs; .rvz and .wia need nodtool)
   --deps F|U  prebuilt Dawn + libuam (build-switch-deps.sh --pack), a file or an http(s) URL,
-              checked against the SHA-256 pinned in build-switch.sh; without it they are built once
+              checked against the SHA-256 pinned in build-switch.sh. Default: the archive of the
+              release switch-deps-1 on GitHub; if it can't be downloaded, they are built here
+  --build-deps build Dawn and libuam here instead (about 10 minutes, once per recipe)
   --out DIR   output folder (default: out/ in this repository); the SD card folder is DIR/switch/nsmbw/
   --jobs N    parallel jobs (default: from the free memory, about 1 GiB per job)
   --clean     delete this checkout's work volume (unpacked game, build tree) first
@@ -33,12 +35,13 @@ game=""
 out=$repo/out
 jobs=""
 clean=0
-deps=""
+deps=https://github.com/schuler-ph/nsmbw-switch/releases/download/switch-deps-1/nsmbw-switch-deps.tar.xz
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out) out=$2; shift 2 ;;
         --jobs) jobs=$2; shift 2 ;;
         --deps) deps=$2; shift 2 ;;
+        --build-deps) deps=""; shift ;;
         --clean) clean=1; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) usage; echo "build.sh: unknown option: $1" >&2; exit 1 ;;
