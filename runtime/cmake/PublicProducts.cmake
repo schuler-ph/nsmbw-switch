@@ -392,8 +392,8 @@ if(MKW_PLATFORM_SWITCH)
         NACP "${CMAKE_BINARY_DIR}/nsmbw.nacp" ${_mkw_nro_icon})
 endif()
 
-# Dev only, not part of any build by default: extracts a disc image the way the game's Open ISO
-# does (wii_disc.cpp), to compare with Dolphin's Extract Entire Disc.
+# Not part of any build by default: extracts a disc image the way the game's Open ISO does
+# (wii_disc.cpp). unpack_game.py builds its own copy with projects/nsmbw/tools/disc-extract/.
 add_executable(WiiDiscExtract EXCLUDE_FROM_ALL
     "${MKW_RUNTIME_SOURCE_DIR}/../projects/nsmbw/tools/WiiDiscExtract.cpp"
     "${MKW_RUNTIME_SOURCE_DIR}/src/wii_disc.cpp")
