@@ -28,6 +28,8 @@ Code.pul
 # Build output
 /build/
 /build-*/
+# build.sh output
+/out/
 /native-build/
 /native-build-newer/
 /native-build-newer-v2/
