@@ -105,20 +105,26 @@ logged shards "${translator[@]}" emit-build-shards --project "$project" \
     --native-source-dir runtime/src --out generated/build_shards
 
 step "switch deps"
-# The volume's name carries a hash of build-switch-deps.sh and its patches, so a finished volume
-# matches this checkout's recipe.
-if [[ -f "$deps/.build-docker-done" ]]; then
-    echo "Dawn and libuam already built in this volume"
+if [[ -n "${DEPS_ARG:-}" ]]; then
+    echo "Dawn and libuam: prebuilt archive $(basename "$DEPS_ARG")"
+    switch_deps=(--deps "$DEPS_ARG")
 else
-    JOBS=$jobs projects/nsmbw/tools/build-switch-deps.sh "$deps"
-    touch "$deps/.build-docker-done"
+    # The volume's name carries a hash of build-switch-deps.sh and its patches, so a finished volume
+    # matches this checkout's recipe.
+    if [[ -f "$deps/.build-docker-done" ]]; then
+        echo "Dawn and libuam already built in this volume"
+    else
+        JOBS=$jobs projects/nsmbw/tools/build-switch-deps.sh "$deps"
+        touch "$deps/.build-docker-done"
+    fi
+    switch_deps=(--dawn-src "$deps/dawn" --dawn-build "$deps/dawn-build-switch"
+        --uam "$deps/uam/build-switch/libuam.a")
 fi
 
 step "switch build"
 stage=$work/stage
 rm -rf "$stage"
-projects/nsmbw/tools/build-switch.sh --dawn-src "$deps/dawn" --dawn-build "$deps/dawn-build-switch" \
-    --uam "$deps/uam/build-switch/libuam.a" --build "$build" --jobs "$jobs" --stage "$stage"
+projects/nsmbw/tools/build-switch.sh "${switch_deps[@]}" --build "$build" --jobs "$jobs" --stage "$stage"
 
 step "copy to output"
 # Replace only the program and its data files: a game/ folder the user put there stays.

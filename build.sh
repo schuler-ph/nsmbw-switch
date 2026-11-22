@@ -2,7 +2,7 @@
 # Builds the Nintendo Switch version (.nro) of New Super Mario Bros. Wii with Docker as the only
 # tool on the host, and lays out the SD card folder <out>/switch/nsmbw/.
 #
-# Usage: ./build.sh <extracted game folder> [--out DIR] [--jobs N] [--clean]
+# Usage: ./build.sh <game folder or disc image> [--deps FILE|URL] [--out DIR] [--jobs N] [--clean]
 #
 # The image (docker/Dockerfile) holds only the pinned toolchain. Your game is mounted read-only;
 # everything made from it stays on this machine: generated/ in this repository, the output folder,
@@ -12,10 +12,13 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-Usage: ./build.sh <extracted game folder> [--out DIR] [--jobs N] [--clean]
+Usage: ./build.sh <game folder or disc image> [--deps FILE|URL] [--out DIR] [--jobs N] [--clean]
 
   <game>      New Super Mario Bros. Wii, USA SMNE01 revision 1, extracted with Dolphin's
-              Extract Entire Disc (a folder with files/ and sys/)
+              Extract Entire Disc (a folder with files/ and sys/), or the disc image itself
+              (.iso, .wbfs; .rvz and .wia need nodtool)
+  --deps F|U  prebuilt Dawn + libuam (build-switch-deps.sh --pack), a file or an http(s) URL,
+              checked against the SHA-256 pinned in build-switch.sh; without it they are built once
   --out DIR   output folder (default: out/ in this repository); the SD card folder is DIR/switch/nsmbw/
   --jobs N    parallel jobs (default: from the free memory, about 1 GiB per job)
   --clean     delete this checkout's work volume (unpacked game, build tree) first
@@ -30,10 +33,12 @@ game=""
 out=$repo/out
 jobs=""
 clean=0
+deps=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out) out=$2; shift 2 ;;
         --jobs) jobs=$2; shift 2 ;;
+        --deps) deps=$2; shift 2 ;;
         --clean) clean=1; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) usage; echo "build.sh: unknown option: $1" >&2; exit 1 ;;
@@ -87,15 +92,31 @@ else
     game_arg=/game-dir/$(basename "$game")
 fi
 
+deps_mount=()
+deps_arg=""
+if [[ -n "$deps" ]]; then
+    case "$deps" in
+        http://*|https://*) deps_arg=$deps ;;
+        *)
+            [[ -f "$deps" ]] || fail "no such file: $deps"
+            deps=$(cd "$(dirname "$deps")" && pwd)/$(basename "$deps")
+            deps_arg=/nsmbw/deps-archive/$(basename "$deps")
+            deps_mount=(-v "$deps:$deps_arg:ro")
+            ;;
+    esac
+fi
+
 tty=()
 [[ -t 1 ]] && tty=(-t)
 docker run --rm "${tty[@]}" --init \
     --user "$(id -u):$(id -g)" \
     -v "$repo:/nsmbw/repo" \
     "${game_mount[@]}" \
+    "${deps_mount[@]}" \
     -v "$out:/out" \
     -v "$work_volume:/nsmbw/work" \
     -v "$deps_volume:/nsmbw/switch-deps" \
     -e GAME_ARG="$game_arg" \
     -e JOBS="$jobs" \
+    -e DEPS_ARG="$deps_arg" \
     "$image" bash /nsmbw/repo/docker/build-in-container.sh
